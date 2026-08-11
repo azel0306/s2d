@@ -35,6 +35,7 @@ checkpoints/
 *.pth
 *.ckpt
 
-# WSL metadata 
+# WSL metadata
 .wslconfig
-.Identifier
+*.Identifier
+*.Zone.Identifier
