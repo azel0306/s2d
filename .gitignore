@@ -1,0 +1,40 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+
+# Logs and local runtime data
+*.log
+*.out
+*.tmp
+*.temp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE/editor settings
+.vscode/
+.idea/
+
+# Model and output artifacts
+saved_models/
+result/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# WSL metadata 
+.wslconfig
+.Identifier
