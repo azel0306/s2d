@@ -34,8 +34,13 @@ checkpoints/
 *.pt
 *.pth
 *.ckpt
+*.pkl
 
 # WSL metadata
 .wslconfig
 *.Identifier
 *.Zone.Identifier
+
+# data
+data.cifar100/
+*.tar.gz
