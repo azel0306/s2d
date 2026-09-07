@@ -12,7 +12,6 @@ from torch.autograd import Variable
 import pickle
 import sys
 from numpy import linalg as LA
-from dataloader import get_data_loader
 from compute_flops import print_model_param_nums, print_model_param_flops
 import json
 
@@ -127,35 +126,15 @@ log.addHandler(fh)
 log.addHandler(ch)
 #########################################################
 
-# Get data loaders
-if args.regression:
-    # Custom regression data loader
-    try:
-        from regression_dataloader import get_regression_data_loader
-        train_loader, test_loader = get_regression_data_loader(
-            dataset=args.dataset,
-            train_batch_size=args.batch_size,
-            test_batch_size=args.test_batch_size,
-            use_cuda=args.cuda,
-            input_dim=args.input_dim,
-            output_dim=args.output_dim
-        )
-    except ImportError:
-        # Fallback to regular dataloader
-        print("Warning: regression_dataloader not found, using regular dataloader")
-        train_loader, test_loader = get_data_loader(
-            dataset=args.dataset,
-            train_batch_size=args.batch_size,
-            test_batch_size=args.test_batch_size,
-            use_cuda=args.cuda
-        )
-else:
-    train_loader, test_loader = get_data_loader(
-        dataset=args.dataset,
-        train_batch_size=args.batch_size,
-        test_batch_size=args.test_batch_size,
-        use_cuda=args.cuda
-    )
+from regression_dataloader import get_dataloader
+train_loader, test_loader = get_dataloader(
+    dataset=args.dataset,
+    train_batch_size=args.batch_size,
+    test_batch_size=args.test_batch_size,
+    use_cuda=args.cuda,
+    input_dim=args.input_dim,
+    output_dim=args.output_dim
+)
 
 print("args.custom_model", args.custom_model)
 
@@ -226,18 +205,8 @@ def train(epoch):
         optimizer.zero_grad()
         output = model(data)
         
-        # MINIMAL CHANGE: Use MSE loss for regression, cross-entropy for classification
-        if args.regression:
-            loss = F.mse_loss(output, target)
-        else:
-            loss = F.cross_entropy(output, target)
-            
+        loss = F.mse_loss(output, target)    
         avg_loss += loss.data
-        
-        # MINIMAL CHANGE: For regression, skip accuracy calculation
-        if not args.regression:
-            pred = output.data.max(1, keepdim=True)[1]
-            train_acc += pred.eq(target.data.view_as(pred)).cpu().numpy().sum()
             
         loss.backward()
         optimizer.step()
@@ -276,10 +245,7 @@ def compute_A(epoch):
         #     print(f"  dummy[0] requires_grad: {model.layers[layer].dummy[0].requires_grad}")
         
         # MINIMAL CHANGE: Use MSE for regression, cross-entropy for classification
-        if args.regression:
-            loss = F.mse_loss(output, target)
-        else:
-            loss = F.cross_entropy(output, target)
+        loss = F.mse_loss(output, target)
         
         # # DEBUG 3: Check before backward
         # print(f"Loss value: {loss.item()}")
@@ -364,30 +330,18 @@ def test():
         data, target = Variable(data), Variable(target)
         output = model(data)
         
-        # MINIMAL CHANGE: Use MSE for regression, cross-entropy for classification
-        if args.regression:
-            test_loss += F.mse_loss(output, target, size_average=False).data
-        else:
-            test_loss += F.cross_entropy(output, target, size_average=False).data
-            pred = output.data.max(1, keepdim=True)[1]
-            correct += pred.eq(target.data.view_as(pred)).cpu().numpy().sum()
-
-    test_loss /= len(test_loader.dataset)
+        test_loss += F.mse_loss(output, target, size_average=False).data
+        
+    test_loss /= len(test_loader.dataset) # TODO from original code, may not needed for regression
     
     # MINIMAL CHANGE: Different logging for regression vs classification
-    if args.regression:
-        log.info('\nTest set: Average MSE: {:.6f}\n'.format(test_loss))
-        return test_loss  # Return loss for regression
-    else:
-        log.info('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.format(
-            test_loss, correct, len(test_loader.dataset),
-            100. * correct / len(test_loader.dataset)))
-        return correct / float(len(test_loader.dataset))  # Return accuracy for classification
+    log.info('\nTest set: Average MSE: {:.6f}\n'.format(test_loss))
+    return test_loss  # Return loss for regression
 
 
-# MINIMAL CHANGE: Initialize prec1 before loop
-prec1 = None
-best_prec1 = float('inf') if args.regression else 0.
+# MINIMAL CHANGE: Initialize loss before loop
+loss = None
+best_loss = float('inf')
 
 for epoch in range(args.epochs):
     if epoch in [int(args.epochs * 0.5), int(args.epochs * 0.75)]:
@@ -396,34 +350,29 @@ for epoch in range(args.epochs):
     
     if args.layer != -1:
         compute_A(epoch)
-        # When computing A, we don't have a prec1 value
-        prec1 = None
+        # When computing A, we don't have a loss value
+        loss = None
         break
     
-    train(epoch)
-    prec1 = test()
+    train_loss = train(epoch)
+    test_loss = test()
     
-    # MINIMAL CHANGE: Different best metric logic
-    if args.regression:
-        is_best = prec1 < best_prec1  # Lower is better for regression
-        best_prec1 = min(prec1, best_prec1)
-    else:
-        is_best = prec1 > best_prec1  # Higher is better for classification
-        best_prec1 = max(prec1, best_prec1)
+    is_best = test_loss < best_loss  # Lower is better for regression
+    best_loss = min(test_loss, best_loss)
 
     torch.save({
         'epoch': epoch + 1,
         'state_dict': model.state_dict(),
         'cfg': model.cfg,
         'optimizer': optimizer.state_dict(),
-        'acc': prec1,
+        'acc': test_loss,
     }, model_save_path)
 
 # Only save results if we actually trained (not just computed A)
-if prec1 is not None:
-    print("Best metric: " + str(best_prec1))
+if test_loss is not None:
+    print("Best metric: " + str(best_loss))
     if not os.path.exists('result'):
         os.makedirs('result')
-    pickle.dump([prec1, best_prec1], open('result/{}_{}_result.pkl'.format(args.dataset, str(args.rd)), 'wb'))
+    pickle.dump([test_loss, best_loss], open('result/{}_{}_result.pkl'.format(args.dataset, str(args.rd)), 'wb'))
 else:
     print("Skipping result save (only computed A for layer {})".format(args.layer))

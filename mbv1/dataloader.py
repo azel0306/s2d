@@ -12,7 +12,7 @@ import os
 
 #dir_path = os.path.dirname(os.path.realpath(__file__))
 base_data_dir = './'
-def get_data_loader(dataset='mnist', train_batch_size=100, test_batch_size=100, use_cuda=True, normalize=False, standardize=False):
+def get_dataloader(dataset='mnist', train_batch_size=100, test_batch_size=100, use_cuda=True, normalize=False, standardize=False):
 
     kwargs = {'num_workers': 8, 'pin_memory': True} if use_cuda else {}
     if dataset == 'mnist':
@@ -131,8 +131,8 @@ def get_data_loader(dataset='mnist', train_batch_size=100, test_batch_size=100, 
         else:
             df = pd.read_csv('data/rosenbrock.csv', delimiter=',')
             
-        x = df['x'].to_numpy()
-        y = df['y'].to_numpy()
+        x = torch.tensor(df['x'].to_numpy())
+        y = torch.tensor(df['y'].to_numpy())
         
         if normalize:
             y, min, max = normalize_data(y)
@@ -140,9 +140,10 @@ def get_data_loader(dataset='mnist', train_batch_size=100, test_batch_size=100, 
         if standardize:
             y, mean, std = standardize_data(y)
         
+        print(x.shape, y.shape)
         data = TensorDataset(x, y)
-        train_loader = DataLoader(data, batch_size=200, shuffle=True)
-        test_loader = None # TODO think of a way for the test loader
+        train_loader = DataLoader(data, batch_size=200, shuffle=False)
+        test_loader = DataLoader(data, batch_size=200, shuffle=False)  # TODO think of a way for the test loader
         
         return train_loader, test_loader
     
@@ -190,5 +191,5 @@ if __name__ == "__main__":
     
     for idx, (data, target) in enumerate(train_loader):
         print(f"Batch {idx}:")
-        print(f"Data: {data}")
-        print(f"Target: {target}")
+        print(f"Data: {data.shape}")
+        print(f"Target: {target.shape}")

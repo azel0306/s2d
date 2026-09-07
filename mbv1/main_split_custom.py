@@ -12,7 +12,6 @@ from torchvision import datasets, transforms
 from torch.autograd import Variable
 
 import sys
-from dataloader import get_data_loader
 from model_custom import SimpleModel
 from model_custom import SpLinearBlock
 from compute_flops import print_model_param_nums, print_model_param_flops
@@ -78,8 +77,8 @@ if args.cuda:
 # Get data loaders
 if args.regression:
     try:
-        from regression_dataloader import get_regression_data_loader
-        train_loader, test_loader = get_regression_data_loader(
+        from regression_dataloader import get_dataloader
+        train_loader, test_loader = get_dataloader(
             dataset=args.dataset,
             train_batch_size=args.batch_size,
             test_batch_size=args.test_batch_size,
@@ -90,15 +89,10 @@ if args.regression:
             standardize=True
         )
     except ImportError:
-        print("Warning: regression_dataloader not found, using regular dataloader")
-        train_loader, test_loader = get_data_loader(
-            dataset=args.dataset,
-            train_batch_size=args.batch_size,
-            test_batch_size=args.test_batch_size,
-            use_cuda=args.cuda
-        )
+        NotImplementedError("Regression dataloader not found. Please ensure regression_dataloader.py is present.")
 else:
-    train_loader, test_loader = get_data_loader(
+    from dataloader import get_dataloader
+    train_loader, test_loader = get_dataloader(
         dataset=args.dataset,
         train_batch_size=args.batch_size,
         test_batch_size=args.test_batch_size,

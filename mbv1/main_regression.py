@@ -7,11 +7,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import pandas as pd
 from torchvision import datasets, transforms
 from torch.autograd import Variable
 
 import sys
-from dataloader import get_data_loader
 from compute_flops import print_model_param_nums, print_model_param_flops
 
 import json
@@ -65,6 +65,8 @@ args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 device = torch.device('cuda') if args.cuda else torch.device('cpu')
 
+print(args)
+
 torch.manual_seed(args.seed)
 if args.cuda:
     torch.cuda.manual_seed(args.seed)
@@ -111,8 +113,8 @@ log.addHandler(ch)
 if args.regression:
     # Custom regression data loader
     try:
-        from regression_dataloader import get_regression_data_loader
-        train_loader, test_loader = get_regression_data_loader(
+        from regression_dataloader import get_dataloader
+        train_loader, test_loader = get_dataloader(
             dataset=args.dataset,
             train_batch_size=args.batch_size,
             test_batch_size=args.test_batch_size,
@@ -123,14 +125,10 @@ if args.regression:
             standardize=True      # ONLY standardize outputs
         )
     except ImportError:
-        print("Warning: regression_dataloader not found, using regular dataloader")
-        train_loader, test_loader = get_data_loader(
-            dataset=args.dataset,
-            train_batch_size=args.batch_size,
-            test_batch_size=args.test_batch_size,
-            use_cuda=args.cuda
-        )
+        NotImplementedError("Regression dataloader not found. Please ensure regression_dataloader.py is present.")
+        
 else:
+    from dataloader import get_data_loader
     train_loader, test_loader = get_data_loader(
         dataset=args.dataset,
         train_batch_size=args.batch_size,
@@ -161,15 +159,15 @@ if args.regression:
     for param_group in optimizer.param_groups:
         param_group['lr'] = args.lr * 0.1  # Use 0.01 instead of 0.1
 
-# additional subgradient descent on the sparsity-induced penalty term
-def updateBN():
-    if args.custom_model:
-        return
-    for m in model.modules():
-        if isinstance(m, MbBlock):
-            m.bn2.weight.grad.data.add_(args.s*torch.sign(m.bn2.weight.data))
-        elif isinstance(m, ConvBlock):
-            m.bn.weight.grad.data.add_(args.s*torch.sign(m.bn.weight.data))
+# # additional subgradient descent on the sparsity-induced penalty term
+# def updateBN():
+#     if args.custom_model:
+#         return
+#     for m in model.modules():
+#         if isinstance(m, MbBlock):
+#             m.bn2.weight.grad.data.add_(args.s*torch.sign(m.bn2.weight.data))
+#         elif isinstance(m, ConvBlock):
+#             m.bn.weight.grad.data.add_(args.s*torch.sign(m.bn.weight.data))
 
 def train(epoch):
     model.train()
@@ -213,10 +211,13 @@ def train(epoch):
         optimizer.step()
         
         if batch_idx % args.log_interval == 0:
-            log.info('Train Epoch: {} [{}/{} ({:.1f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(data), len(train_loader.dataset),
-                100. * batch_idx / len(train_loader), loss.data))
-
+            # log.info('Train Epoch: {} [{}/{} ({:.1f}%)]\tLoss: {:.6f}'.format(
+            #     epoch, batch_idx * len(data), len(train_loader.dataset),
+            #     100. * batch_idx / len(train_loader), loss.data))
+            log.info(f"Train Epoch: {epoch} \tLoss: {loss.data:.6f}")
+        
+        return avg_loss # TODO may want to check if this is the average loss or just the last batch loss when using different dataset. ok for rastrigin and rosenbrock
+    
 def test():
     model.eval()
     test_loss = 0
@@ -229,13 +230,13 @@ def test():
         
         if args.regression:
             # Use sum for proper averaging
-            test_loss += F.mse_loss(output, target, reduction='sum').item()
+            test_loss += F.mse_loss(output, target, reduction='mean').item()
         else:
             test_loss += F.cross_entropy(output, target, reduction='sum').item()
             pred = output.data.max(1, keepdim=True)[1]
             correct += pred.eq(target.data.view_as(pred)).cpu().numpy().sum()
 
-    test_loss /= len(test_loader.dataset)
+    # test_loss /= len(test_loader.dataset)
     
     if args.regression:
         log.info('\nTest set: Average MSE: {:.6f}\n'.format(test_loss))
@@ -250,15 +251,15 @@ def test():
 def save_checkpoint(state, model_path):
     torch.save(state, model_path)
 
-# Set best metric based on task
-if args.regression:
-    best_prec1 = float('inf')  # For MSE, lower is better
-else:
-    best_prec1 = 0.  # For accuracy, higher is better
+# Set initial value for best loss
+best_loss = float('inf')  # Start with highest loss. For MSE, lower is better.
 
 curr_lr = args.lr
 if args.regression:
     curr_lr = args.lr * 0.1  # Lower LR for regression
+
+# Az, datalogging purpose
+dct = {'train_loss': [], 'test_loss': []}
 
 for epoch in range(args.start_epoch, args.epochs):
     if epoch in [int(args.epochs * 0.5), int(args.epochs * 0.75)]:
@@ -267,17 +268,17 @@ for epoch in range(args.start_epoch, args.epochs):
             curr_lr *= 0.1
     log.info('{}, {}'.format(epoch, curr_lr))
 
-    train(epoch)
-    prec1 = test()
-
-    if args.regression:
-        is_best = prec1 < best_prec1
-        best_prec1 = min(prec1, best_prec1)
-    else:
-        is_best = prec1 > best_prec1
-        best_prec1 = max(prec1, best_prec1)
+    train_loss = train(epoch)
+    test_loss = test()
+    
+    dct['train_loss'].append(train_loss)
+    dct['test_loss'].append(test_loss)
+    
+    is_best = test_loss < best_loss
+    best_loss = min(test_loss, best_loss)
         
-    log.info('Best: {:.6f}'.format(best_prec1))
+    log.info('Best: {:.6f}'.format(best_loss))
+    log.info(f"Current: {test_loss:.6f} ")
     
     torch.save({
         'epoch': epoch + 1,
@@ -285,6 +286,9 @@ for epoch in range(args.start_epoch, args.epochs):
         'sr': args.sr,
         's': args.s,
         'state_dict': model.state_dict(),
-        'best_prec1': best_prec1,
+        'best_loss': best_loss,
         'optimizer': optimizer.state_dict(),
     }, os.path.join(args.save, model_save_path))
+    
+df = pd.DataFrame(dct)
+df.to_csv(os.path.join(args.save, f'{args.dataset}_loss_log.csv'), index=False)

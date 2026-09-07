@@ -1,210 +1,108 @@
 import torch
 import numpy as np
+import pandas as pd
+from torch.utils.data import Dataset, DataLoader, TensorDataset
 
-def get_regression_data_loader(dataset='rosenbrock', train_batch_size=256, 
-                               test_batch_size=100, use_cuda=True, 
-                               input_dim=1, output_dim=1, num_samples=10000,
+def get_dataloader(dataset='rosenbrock', train_batch_size=200, 
+                               test_batch_size=200, use_cuda=True, 
+                               input_dim=1, output_dim=1, num_samples=200,
                                normalize=True, standardize=True):
     """
     Create regression dataset with normalization and standardization.
     """
-    kwargs = {'num_workers': 8, 'pin_memory': True} if use_cuda else {}
     
-    if dataset == 'rosenbrock':
-        # CORRECT Rosenbrock function for regression
-        # For input_dim=1: f(x) = 100*x^4 + (1-x)^2
-        # For input_dim=2: f(x,y) = (1-x)^2 + 100*(y-x^2)^2
-        def rosenbrock(x):
-            if x.shape[1] == 1:
-                # 1D Rosenbrock: f(x) = 100*x^4 + (1-x)^2
-                return 100 * x**4 + (1 - x)**2
-            else:
-                # 2D Rosenbrock: f(x,y) = (1-x)^2 + 100*(y-x^2)^2
-                # For higher dimensions, sum over pairs
-                result = torch.zeros(x.shape[0], 1)
-                for i in range(0, x.shape[1] - 1, 2):
-                    x_i = x[:, i:i+1]
-                    x_next = x[:, i+1:i+2]
-                    term = (1 - x_i)**2 + 100 * (x_next - x_i**2)**2
-                    result += term
-                return result
+    if dataset == 'rastrin' or dataset == 'rosenbrock':
+        if dataset == 'rastrin':
+            df = pd.read_csv('data/rastrin.csv', delimiter=',')
+        else:
+            df = pd.read_csv('data/rosenbrock.csv', delimiter=',')
+            
+        # Convert to float32 explicitly
+        x = torch.tensor(df['x'].to_numpy(), dtype=torch.float32)
+        y_true = torch.tensor(df['y'].values, dtype=torch.float32)
+        y_train = torch.tensor(df['y_train'].values, dtype=torch.float32)
+        y_test = torch.tensor(df['y_test'].values, dtype=torch.float32)      
         
-        # Generate training data
-        x_train = torch.rand(num_samples, input_dim) * 4 - 2  # Range [-2, 2]
-        y_train = rosenbrock(x_train)
+        # if normalize:
+        #     x = normalize_data(x)
+        #     y_true, min, max = normalize_data(y_true)
+        #     y_train, _, _ = normalize_data(y_train, min_val=min, max_val=max)
+        #     y_test, _, _ = normalize_data(y_test, min_val=min, max_val=max)
         
-        # Generate test data
-        x_test = torch.linspace(-2, 2, 200).reshape(-1, input_dim)
-        y_test = rosenbrock(x_test)
+        # if standardize:
+        #     x = standardize_data(x)
+        #     y_true, mean, std = standardize_data(y_true)
+        #     y_train, _, _ = standardize_data(y_train, mean_val=mean, std_val=std)
+        #     y_test, _, _ = standardize_data(y_test, mean_val=mean, std_val=std)
         
-    elif dataset == 'rosenbrock_1d_standard':
-        # Standard 1D Rosenbrock: f(x) = 100*x^4 + (1-x)^2
-        def rosenbrock_1d(x):
-            return 100 * x**4 + (1 - x)**2
+        # === 2. Apply normalization and standardization ===
+        # Normalize x to [0, 1] range
+        x_normalized, x_min, x_max = normalize_data(x)
+        # Standardize y to zero mean and unit variance
+        y_true_std, y_true_mean, y_true_std = standardize_data(y_true)
+        y_train_data, y_train_mean, y_train_std = standardize_data(y_train)
+        y_test_data, y_test_mean, y_test_std = standardize_data(y_test)
         
-        x_train = torch.rand(num_samples, input_dim) * 4 - 2
-        y_train = rosenbrock_1d(x_train)
+        x_normalized = x_normalized.unsqueeze(1)  # Add feature dimension
+        y_train_data = y_train_data.unsqueeze(1)  # Add feature dimension
+        y_test_data = y_test_data.unsqueeze(1)    # Add feature dimension
         
-        x_test = torch.linspace(-2, 2, 200).reshape(-1, input_dim)
-        y_test = rosenbrock_1d(x_test)
+        print(x_normalized.shape, y_train_mean.shape)
+        print(f"x normalized range: [{x_normalized.min():.4f}, {x_normalized.max():.4f}]")
+        print(f"y standardized: mean={y_train_mean:.4f}, std={y_train_std:.4f}")
         
-    elif dataset == 'rosenbrock_2d':
-        # Standard 2D Rosenbrock: f(x,y) = (1-x)^2 + 100*(y-x^2)^2
-        def rosenbrock_2d(x):
-            # x should have 2 dimensions
-            x1 = x[:, 0:1]
-            x2 = x[:, 1:2]
-            return (1 - x1)**2 + 100 * (x2 - x1**2)**2
         
-        x_train = torch.rand(num_samples, input_dim) * 4 - 2
-        y_train = rosenbrock_2d(x_train)
+        train_data = TensorDataset(x_normalized, y_train_data)
+        test_data = TensorDataset(x_normalized, y_test_data)
+        train_loader = DataLoader(train_data, batch_size=train_batch_size, shuffle=False)
+        # TODO think of a way for the test loader, temporarily using training data for testing
+        test_loader = DataLoader(test_data, batch_size=test_batch_size, shuffle=False)  
         
-        x_test = torch.linspace(-2, 2, 200).reshape(-1, input_dim)
-        y_test = rosenbrock_2d(x_test)
-        
-    elif dataset == 'rastrin':
-        # Correct Rastrigin function
-        def rastrigin(x):
-            n = x.shape[1]  # Number of dimensions
-            sum_term = (x**2 - 10 * torch.cos(2 * np.pi * x)).sum(dim=1, keepdim=True)
-            return 10 * n + sum_term
-        
-        x_train = torch.rand(num_samples, input_dim) * 10.24 - 5.12
-        y_train = rastrigin(x_train)
-        
-        x_test = torch.linspace(-5.12, 5.12, 200).reshape(-1, input_dim)
-        y_test = rastrigin(x_test)
-        
-    elif dataset == 'sine':
-        # Sine function with noise
-        x_train = torch.rand(num_samples, input_dim) * 4 * np.pi - 2 * np.pi
-        y_train = torch.sin(x_train) + 0.1 * torch.randn(num_samples, input_dim)
-        
-        x_test = torch.linspace(-2*np.pi, 2*np.pi, 200).reshape(-1, input_dim)
-        y_test = torch.sin(x_test)
-        
-    else:
-        # Default: linear function with noise
-        w_true = torch.randn(input_dim, output_dim)
-        b_true = torch.randn(output_dim)
-        
-        x_train = torch.rand(num_samples, input_dim) * 2 - 1
-        y_train = x_train @ w_true + b_true + 0.1 * torch.randn(num_samples, output_dim)
-        
-        x_test = torch.linspace(-1, 1, 200).reshape(-1, input_dim)
-        y_test = x_test @ w_true + b_true
+        return train_loader, test_loader
     
-    # Normalize inputs to [0, 1]
-    if normalize:
-        x_min = x_train.min(dim=0)[0]
-        x_max = x_train.max(dim=0)[0]
-        x_range = x_max - x_min
-        x_range[x_range == 0] = 1.0
-        
-        x_train = (x_train - x_min) / x_range
-        x_test = (x_test - x_min) / x_range
-        
-        # Also normalize outputs
-        y_min = y_train.min(dim=0)[0]
-        y_max = y_train.max(dim=0)[0]
-        y_range = y_max - y_min
-        y_range[y_range == 0] = 1.0
-        
-        y_train = (y_train - y_min) / y_range
-        y_test = (y_test - y_min) / y_range
-    
-    # Standardize outputs (zero mean, unit variance)
-    if standardize:
-        y_mean = y_train.mean(dim=0)
-        y_std = y_train.std(dim=0)
-        y_std[y_std == 0] = 1.0
-        
-        y_train = (y_train - y_mean) / y_std
-        y_test = (y_test - y_mean) / y_std
-        
-        # Also standardize inputs
-        x_mean = x_train.mean(dim=0)
-        x_std = x_train.std(dim=0)
-        x_std[x_std == 0] = 1.0
-        
-        x_train = (x_train - x_mean) / x_std
-        x_test = (x_test - x_mean) / x_std
-    
-    print(f"Dataset: {dataset}, input_dim: {input_dim}, output_dim: {output_dim}")
-    print(f"Training samples: {num_samples}")
-    print(f"x_train shape: {x_train.shape}, y_train shape: {y_train.shape}")
-    print(f"x stats - mean: {x_train.mean():.4f}, std: {x_train.std():.4f}")
-    print(f"y stats - mean: {y_train.mean():.4f}, std: {y_train.std():.4f}")
-    
-    # Create datasets
-    train_dataset = torch.utils.data.TensorDataset(x_train, y_train)
-    test_dataset = torch.utils.data.TensorDataset(x_test, y_test)
-    
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=train_batch_size, shuffle=True, **kwargs)
-    test_loader = torch.utils.data.DataLoader(
-        test_dataset, batch_size=test_batch_size, shuffle=False, **kwargs)
-    
+
     return train_loader, test_loader
 
+    
+class CustomDataset(Dataset):
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
 
-# If you want your original time-series style Rosenbrock
-def generate_rosenbrock_sequence(n_samples=200):
-    """
-    Generate Rosenbrock as a sequence (your original implementation).
-    This is for time-series prediction, NOT standard regression.
-    """
-    x = torch.linspace(-2, 2, n_samples)
-    y = 100 * (x[1:] - x[:-1]**2)**2 + (1 - x[:-1])**2
-    return x[1:], y
+    def __len__(self):
+        return len(self.x)
 
+    def __getitem__(self, idx):
+        return self.x[idx], self.y[idx]
+
+def normalize_data(data, min_val=None, max_val=None):
+    """Min-max normalization to [0, 1] range"""
+    if min_val is None:
+        min_val = data.min()
+    if max_val is None:
+        max_val = data.max()
+    return (data - min_val) / (max_val - min_val + 1e-8), min_val, max_val
+
+def denormalize_data(data, min_val, max_val):
+    """Reverse min-max normalization"""
+    return data * (max_val - min_val + 1e-8) + min_val
+
+def standardize_data(data, mean=None, std=None):
+    """Standardization to zero mean and unit variance"""
+    if mean is None:
+        mean = data.mean()
+    if std is None:
+        std = data.std()
+    return (data - mean) / (std + 1e-8), mean, std
+
+def destandardize(data, mean, std):
+    """Reverse standardization"""
+    return data * (std + 1e-8) + mean
 
 if __name__ == "__main__":
-    print("=" * 50)
-    print("Testing Rosenbrock (1D standard)")
-    print("=" * 50)
+    train_loader, test_loader = get_dataloader(dataset='rosenbrock', train_batch_size=200, test_batch_size=200, use_cuda=False)
     
-    train_loader, test_loader = get_regression_data_loader(
-        dataset='rosenbrock',
-        input_dim=1,
-        output_dim=1,
-        num_samples=1000,
-        normalize=True,
-        standardize=True
-    )
-    
-    
-    for x, y in train_loader:
-        print(len(train_loader))
-        print(f"x shape: {x.shape}, y shape: {y.shape}")
-        print(f"x mean: {x.mean():.4f}, x std: {x.std():.4f}")
-        print(f"y mean: {y.mean():.4f}, y std: {y.std():.4f}")
-        break
-    
-    print("\n" + "=" * 50)
-    print("Testing Rosenbrock (2D standard)")
-    print("=" * 50)
-    
-    train_loader, test_loader = get_regression_data_loader(
-        dataset='rosenbrock_2d',
-        input_dim=2,
-        output_dim=1,
-        num_samples=1000,
-        normalize=True,
-        standardize=True
-    )
-    
-    for x, y in train_loader:
-        print(f"x shape: {x.shape}, y shape: {y.shape}")
-        print(f"x mean: {x.mean():.4f}, x std: {x.std():.4f}")
-        print(f"y mean: {y.mean():.4f}, y std: {y.std():.4f}")
-        break
-    
-    print("\n" + "=" * 50)
-    print("Your original sequence-style Rosenbrock (for reference)")
-    print("=" * 50)
-    
-    x_seq, y_seq = generate_rosenbrock_sequence(10)
-    print(f"x_seq shape: {x_seq.shape}, y_seq shape: {y_seq.shape}")
-    print(f"x_seq: {x_seq[:5]}")
-    print(f"y_seq: {y_seq[:5]}")
+    for idx, (data, target) in enumerate(train_loader):
+        print(f"Batch {idx}:")
+        print(f"Data: {data.shape}, sample: {data[0] , type(data[0])}")
+        print(f"Target: {target.shape}, sample: {target[0] , type(target[0])}")
