@@ -21,23 +21,26 @@ class SpLinearBlock(nn.Module):
         self.linear = nn.Linear(in_features, out_features)
         self.activation = activation
         self.apply_dummy = dummy
-        
-        # Initialize dummy as empty list - matches main_finetune expectation
         self.dummy = []
         
     def _swish(self, x):
         return x * torch.sigmoid(x)
     
+    def _d_swish(self, x):
+        """First derivative of swish"""
+        s = torch.sigmoid(x)
+        return s + x * s * (1. - s)
+    
     def _dd_swish(self, x):
         """Second derivative of swish"""
         s = torch.sigmoid(x)
-        return s * (1 - s) * (2 * x + 1)
+        return s * (1. - s) + s + x * s * (1. - s) - (s**2 + 2. * x * s**2 * (1. - s))
     
     def _dd_softplus(self, x, beta=3.):
         """Second derivative of softplus (smooth ReLU approximation)"""
         z = x * beta
         o = torch.sigmoid(z)
-        return beta * o * (1 - o)
+        return beta * o * (1. - o)
     
     def _activate(self, x):
         """Apply activation function"""
@@ -55,28 +58,63 @@ class SpLinearBlock(nn.Module):
     def sp_forward(self, x):
         """
         Splitting-aware forward pass.
-        This matches the author's implementation in sp_conv.py
+        This matches the author's implementation in sp_conv.py for FC layers.
+        
+        The key insight from the authors:
+        - Use zeros for dummy variables (they get gradients via backprop)
+        - The dummy term is weighted by the second derivative of activation
+        - This computes the Hessian approximation needed for splitting
         """
-        linear_out = self.linear(x)
+        linear_out = self.linear(x)  # [batch, out_features]
+        
+        # Apply activation
         activated = self._activate(linear_out)
         
         if not self.apply_dummy:
             return activated
         
-        # Reset dummy list for this forward pass
+        # Reset dummy list
         self.dummy = []
-        batch, dim = x.shape
+        batch, dim = x.shape  # dim = in_features
+        n_out = linear_out.shape[1]  # out_features
+        
+        # Compute second derivative of activation function
+        if self.activation is None:
+            act_sec_ord_grad = torch.ones_like(linear_out)  # [batch, out_features]
+        elif self.activation == 'swish':
+            act_sec_ord_grad = self._dd_swish(linear_out)  # [batch, out_features]
+        else:
+            act_sec_ord_grad = self._dd_softplus(linear_out)  # [batch, out_features]
+        
+        # Reshape for computation
+        act_sec_ord_grad = act_sec_ord_grad.permute(1, 0)  # [out_features, batch]
+        
+        # Create dummy variables for each output neuron
+        # Following the authors: use zeros, NOT random!
         aux_terms = []
         
-        for i in range(linear_out.shape[1]):
+        for i in range(n_out):
+            # Dummy variable for the i-th output neuron
+            # Shape: [in_features, in_features] (matches author's dim x dim)
             V = Variable(torch.zeros(dim, dim, device=x.device), requires_grad=True)
             self.dummy.append(V)
             
-            tmp = torch.matmul(x, V)
-            dummy_term = (tmp * x).sum(dim=1, keepdim=True)
-            aux_terms.append(dummy_term)
+            # Compute x^T V x for each sample
+            # This is the FC version of the authors' patch-based computation
+            tmp = torch.matmul(x, V)  # [batch, dim]
+            dummy_term = (tmp * x).sum(dim=1, keepdim=True)  # [batch, 1]
+            
+            # Weight by the second derivative of activation
+            # This is the key difference from a simple linearization
+            left = act_sec_ord_grad[i:i+1, :]  # [1, batch]
+            weighted_dummy_term = left * dummy_term.permute(1, 0)  # [1, batch]
+            aux_terms.append(weighted_dummy_term)
         
-        aux = torch.cat(aux_terms, dim=1)
+        # Combine all auxiliary terms
+        aux = torch.cat(aux_terms, dim=0).permute(1, 0)  # [batch, out_features]
+        
+        # Return activated + auxiliary term
+        # This matches the authors' pattern: out = activation(bn_out) + aux
         return activated + aux
 
 class SimpleModel(nn.Module):
@@ -86,10 +124,9 @@ class SimpleModel(nn.Module):
         super(SimpleModel, self).__init__()
         if cfg is None:
             if dataset == 'rosenbrock' or dataset == 'rastrin':
-                print("#"*64)
                 self.cfg = regression
             else:
-                self.cfg = classification ## TODO 
+                self.cfg = classification
         else:
             self.cfg = cfg
             print("Using custom cfg:", self.cfg)
@@ -99,9 +136,9 @@ class SimpleModel(nn.Module):
         self.layers = self._make_layers()
         
         if dataset == 'rosenbrock' or dataset == 'rastrin':
-            self.linear = nn.Linear(self.cfg[-1][1], 1)  
-        else: 
-            NotImplementedError
+            self.linear = nn.Linear(self.cfg[-1][1], 1)
+        else:
+            raise NotImplementedError
         
     def _make_layers(self):
         """Create layers with dummy flag for the specified layer"""
@@ -157,15 +194,13 @@ if __name__ == "__main__":
     print("Output dimension:", regression[-1][1])
     
     # Test the model
-    cfg = [(1, 3), (3, 1)]  # Example configuration
-    print(cfg[:-1])
-    model = SimpleModel(cfg=cfg, dataset='custom', activation='relu', dummy_layer=0)
+    cfg = [(1, 3)]
+    model = SimpleModel(cfg=cfg, dataset='rosenbrock', activation='relu', dummy_layer=0)
     print("Model created successfully!")
     print("Model details:", get_model_details(model))
-    print("Model structure:", model)
     
     # Test forward pass
-    x = torch.randn(10, 1)
+    x = torch.randn(4, 1)
     print("Input shape:", x.shape)
     
     # Regular forward
@@ -180,12 +215,44 @@ if __name__ == "__main__":
     for i, layer in enumerate(model.layers):
         if hasattr(layer, 'dummy') and len(layer.dummy) > 0:
             print(f"Layer {i} has {len(layer.dummy)} dummy variables")
-            print(f"dummy[0] requires_grad: {layer.dummy[0].requires_grad}")
-            
-    for name, mm in model.named_children():
-        if name == 'layers':
-            print(f"Layers: {mm}")
-            for i, layer in enumerate(mm):
-                print(f"Layer {i}: {layer}")
-        elif name == 'linear':
-            print(f"Final linear layer: {mm}")
+            print(f"  dummy[0].shape: {layer.dummy[0].shape}")
+            print(f"  dummy[0].requires_grad: {layer.dummy[0].requires_grad}")
+    
+    # Test gradients (simulating compute_A)
+    print("\n--- Simulating compute_A ---")
+    loss = y_sp.sum()
+    loss.backward()
+    
+    print("Gradients after backward:")
+    for i, layer in enumerate(model.layers):
+        if hasattr(layer, 'dummy') and len(layer.dummy) > 0:
+            for j, param in enumerate(layer.dummy):
+                if param.grad is not None:
+                    grad_norm = param.grad.norm().item()
+                    print(f"  Layer {i}, dummy {j}: grad norm = {grad_norm:.6f}")
+                    if grad_norm > 1e-8:
+                        print(f"    ✅ Gradient is non-zero!")
+                    else:
+                        print(f"    ⚠️ Gradient is near zero!")
+                else:
+                    print(f"  Layer {i}, dummy {j}: grad is None ❌")
+    
+    # Check if A matrix would be valid
+    print("\n--- Checking A matrix ---")
+    A = []
+    for param in model.layers[0].dummy:
+        if param.grad is not None:
+            A.append(param.grad.data.cpu().numpy())
+    
+    if len(A) > 0:
+        A = np.array(A)
+        print(f"A shape: {A.shape}")
+        print(f"A mean: {A.mean():.6f}")
+        print(f"A std: {A.std():.6f}")
+        
+        if not np.allclose(A, 0):
+            print("✅ A has non-zero values!")
+        else:
+            print("❌ A is all zeros!")
+    else:
+        print("❌ No gradients collected!")

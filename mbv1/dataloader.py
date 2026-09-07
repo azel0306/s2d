@@ -4,14 +4,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
+import pandas as pd
 from torchvision import datasets, transforms
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, TensorDataset
 import os
 
 
 #dir_path = os.path.dirname(os.path.realpath(__file__))
 base_data_dir = './'
-def get_data_loader(dataset='mnist', train_batch_size=100, test_batch_size=100, use_cuda=True):
+def get_data_loader(dataset='mnist', train_batch_size=100, test_batch_size=100, use_cuda=True, normalize=False, standardize=False):
 
     kwargs = {'num_workers': 8, 'pin_memory': True} if use_cuda else {}
     if dataset == 'mnist':
@@ -82,45 +83,73 @@ def get_data_loader(dataset='mnist', train_batch_size=100, test_batch_size=100, 
                            ])),
             batch_size=test_batch_size, shuffle=True, **kwargs)
         
-    elif dataset == 'rastrin' or dataset == 'rosenbrock':
-        torch.manual_seed(0)
+    # elif dataset == 'rastrin' or dataset == 'rosenbrock':
+    #     torch.manual_seed(0)
         
-        def rosenbrock(n_samples = 200+1):
-            x = torch.linspace(-2, 2, n_samples)
-            y = 100 * (x[1:] - x[:-1]**2)**2 + (1 - x[:-1])**2
-            return x[1:], y
+    #     def rosenbrock(n_samples = 200+1):
+    #         x = torch.linspace(-2, 2, n_samples)
+    #         y = 100 * (x[1:] - x[:-1]**2)**2 + (1 - x[:-1])**2
+    #         return x[1:], y
 
-        def rastrin(n_samples = 200):
-            x = torch.linspace(-5.12, 5.12, n_samples)
-            A = 10
-            y = A * n_samples + (x ** 2 - A * torch.cos(2 * np.pi * x))
+    #     def rastrin(n_samples = 200):
+    #         x = torch.linspace(-5.12, 5.12, n_samples)
+    #         A = 10
+    #         y = A * n_samples + (x ** 2 - A * torch.cos(2 * np.pi * x))
 
-            return x, y
+    #         return x, y
         
-        x, y = rosenbrock() if dataset == 'rosenbrock' else rastrin()
-        x, y = x.unsqueeze(1), y.unsqueeze(1)
+    #     x, y = rosenbrock() if dataset == 'rosenbrock' else rastrin()
+    #     x, y = x.unsqueeze(1), y.unsqueeze(1)
     
-        # === 2. Apply normalization and standardization ===
-        # Normalize x to [0, 1] range
-        x_normalized, x_min, x_max = normalize(x)
-        # Standardize y to zero mean and unit variance
-        y_standardized, y_mean, y_std = standardize(y)
+    #     # === 2. Apply normalization and standardization ===
+    #     # Normalize x to [0, 1] range
+    #     if normalize:
+    #         x_normalized, x_min, x_max = normalize(x)
+    #     else: x_normalized = x
         
-        print(f"x normalized range: [{x_normalized.min():.4f}, {x_normalized.max():.4f}]")
-        print(f"y standardized: mean={y_mean:.4f}, std={y_std:.4f}")
+    #     # Standardize y to zero mean and unit variance
+    #     if standardize:
+    #         y_standardized, y_mean, y_std = standardize(y)
+    #     else: y_standardized = y
+        
+    #     # print(f"x normalized range: [{x_normalized.min():.4f}, {x_normalized.max():.4f}]")
+    #     # print(f"y standardized: mean={y_mean:.4f}, std={y_std:.4f}")
 
-        # Use normalized/standardized data for training
-        x = x_normalized.cuda() if use_cuda else x_normalized
-        y = y_standardized.cuda() if use_cuda else y_standardized
+    #     # Use normalized/standardized data for training
+    #     x = x_normalized.cuda() if use_cuda else x_normalized
+    #     y = y_standardized.cuda() if use_cuda else y_standardized
         
-        train_dataset = CustomDataset(x, y)
-        test_dataset = CustomDataset(x, y)  # Using the same data for testing for now; in practice, you would want a separate test set
+    #     train_dataset = CustomDataset(x, y)
+    #     test_dataset = CustomDataset(x, y)  # Using the same data for testing for now; in practice, you would want a separate test set
         
-        train_loader = DataLoader(train_dataset, batch_size=200, shuffle=True)
-        test_loader = DataLoader(test_dataset, batch_size=200, shuffle=True)
+    #     train_loader = DataLoader(train_dataset, batch_size=200, shuffle=True)
+    #     test_loader = DataLoader(test_dataset, batch_size=200, shuffle=True)
+        
+    elif dataset == 'rastrin' or dataset == 'rosenbrock':
+        if dataset == 'rastrin':
+            df = pd.read_csv('data/rastrin.csv', delimiter=',')
+        else:
+            df = pd.read_csv('data/rosenbrock.csv', delimiter=',')
+            
+        x = df['x'].to_numpy()
+        y = df['y'].to_numpy()
+        
+        if normalize:
+            y, min, max = normalize_data(y)
+        
+        if standardize:
+            y, mean, std = standardize_data(y)
+        
+        data = TensorDataset(x, y)
+        train_loader = DataLoader(data, batch_size=200, shuffle=True)
+        test_loader = None # TODO think of a way for the test loader
+        
+        return train_loader, test_loader
+    
 
     return train_loader, test_loader
 
+    
 class CustomDataset(Dataset):
     def __init__(self, x, y):
         self.x = x
@@ -132,7 +161,7 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         return self.x[idx], self.y[idx]
 
-def normalize(data, min_val=None, max_val=None):
+def normalize_data(data, min_val=None, max_val=None):
     """Min-max normalization to [0, 1] range"""
     if min_val is None:
         min_val = data.min()
@@ -140,11 +169,11 @@ def normalize(data, min_val=None, max_val=None):
         max_val = data.max()
     return (data - min_val) / (max_val - min_val + 1e-8), min_val, max_val
 
-def denormalize(data, min_val, max_val):
+def denormalize_data(data, min_val, max_val):
     """Reverse min-max normalization"""
     return data * (max_val - min_val + 1e-8) + min_val
 
-def standardize(data, mean=None, std=None):
+def standardize_data(data, mean=None, std=None):
     """Standardization to zero mean and unit variance"""
     if mean is None:
         mean = data.mean()

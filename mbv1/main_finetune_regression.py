@@ -93,6 +93,10 @@ else:
 if not os.path.exists(args.save):
     os.makedirs(args.save)
 
+print("#"*64)
+print(f"Using checkpoint {args.load}")
+print("#"*64)
+
 checkpoint = torch.load(args.load, weights_only=False)
 
 if args.custom_model and args.layer == -1:
@@ -277,9 +281,9 @@ def compute_A(epoch):
         else:
             loss = F.cross_entropy(output, target)
         
-        # DEBUG 3: Check before backward
-        print(f"Loss value: {loss.item()}")
-        print(f"Loss requires_grad: {loss.requires_grad}")
+        # # DEBUG 3: Check before backward
+        # print(f"Loss value: {loss.item()}")
+        # print(f"Loss requires_grad: {loss.requires_grad}")
         
         loss.backward()
         

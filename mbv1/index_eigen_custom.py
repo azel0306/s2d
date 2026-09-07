@@ -2,6 +2,8 @@ import pickle
 import numpy as np
 import sys
 
+HARD_LIMIT = 20  # Default hard limit for eigenvalue thresholding
+
 def eigen(num, layer_num, dataset):
     num = str(num)
     cur = pickle.load(open('config/{}_{}.pkl'.format(dataset, num), 'rb'))
@@ -46,6 +48,10 @@ def eigen(num, layer_num, dataset):
         st = np.argsort(W)
         grow_rate = 0.3
         t = int(grow_rate * W.shape[0])
+        if (W.shape[0] + t) > HARD_LIMIT:
+            if W.shape[0] < HARD_LIMIT:
+                t = HARD_LIMIT - W.shape[0]
+            else: t = 0
         thre = W[st[t]]
         
         for i in group:
@@ -79,6 +85,9 @@ def eigen(num, layer_num, dataset):
         print(f"Delta saved: {Delta}")
     else:
         print("No Delta data!")
+
+print("Running eigenvalue computation...")
+eigen(sys.argv[1], sys.argv[2], sys.argv[3])
 
 if __name__ == "__main__":
     if len(sys.argv) != 4:

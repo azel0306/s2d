@@ -195,14 +195,32 @@ print("Delta cfg:", cfg)
 
 # Build new config - SKIP final layer for splitting
 new_cfg = []
-prev_out = 0
+prev_out = None
 
-for i, (in_features, out_features) in enumerate(base): # TODO this works only for FC layer
-    new_cfg.append([in_features+prev_out, out_features+cfg[i]])
-    prev_out = cfg[i]
-    
-print(f"Base cfg: {base}")
-print(f"New cfg: {new_cfg}")
+for i in range(len(base)):
+    if isinstance(base[i], (tuple, list)):
+        in_features, out_features = base[i]
+        
+        if prev_out is not None:
+            in_features = prev_out
+        
+        # ONLY add delta if this is NOT the final layer
+        if i < len(base) - 1:
+            new_out = out_features + cfg[i]
+        else:
+            # Final layer: keep output dimension the same
+            new_out = out_features
+        
+        new_cfg.append((in_features, new_out))
+        prev_out = new_out
+    else:
+        if i < len(base) - 1:
+            new_cfg.append(base[i] + cfg[i])
+        else:
+            new_cfg.append(base[i])
+        prev_out = base[i] + cfg[i] if i < len(base) - 1 else base[i]
+
+print("New cfg:", new_cfg)
 
 ##################################
 ##### copy weights and split #####
@@ -221,45 +239,69 @@ layer_id_in_cfg = 0
 start_mask = np.array([])
 end_mask = cfg_mask[layer_id_in_cfg]
 
-# Iterate through hidden layers
-for k, (m0, m1) in enumerate(zip(model.layers, newmodel.layers)):
+# Iterate through modules
+for k, (m0, m1) in enumerate(zip(model.modules(), newmodel.modules())):
     print(f"k={k}: {type(m0).__name__} -> {type(m1).__name__}")
     
+    # Check if it's a SpLinearBlock
     if isinstance(m0, SpLinearBlock) and isinstance(m1, SpLinearBlock):
         print(f">>> Splitting SpLinearBlock at k={k}")
+        print(f"  Old weight: {m0.linear.weight.shape}, New weight: {m1.linear.weight.shape}")
         
         # Get indices for splitting
-        idx0 = np.squeeze(np.asarray(start_mask)) # indices of split neurons from the previous layer
-        idx1 = np.squeeze(np.asarray(end_mask)) # indices of split neurons to split in the current layer
-        if idx0.size == 1:
-            idx0 = np.resize(idx0, (1,))
-        if idx1.size == 1:
-            idx1 = np.resize(idx1, (1,))
+        idx0 = np.squeeze(np.argwhere(np.asarray(start_mask)))
+        idx1 = np.squeeze(np.argwhere(np.asarray(end_mask)))
         
         print(f"  idx0: {idx0}, idx1: {idx1}")
         
-        # accomodate previous layer output due to splitting
-        # TODO since our model is 1 hidden layer, we can skip this step. But for generalization, we need to handle this.
+        if idx0.size == 0:
+            # No neurons to split - just copy
+            m1.linear.weight.data = m0.linear.weight.data.clone()
+            m1.linear.bias.data = m0.linear.bias.data.clone()
+            print(f"  No neurons to split, just copied")
+        else:
+            if idx0.size == 1:
+                idx0 = np.resize(idx0, (1,))
+            if idx1.size == 1:
+                idx1 = np.resize(idx1, (1,))
+            
+            # Copy and split weights
+            linear_weight = m0.linear.weight.data.clone()  # [old_out, in]
+            linear_bias = m0.linear.bias.data.clone()      # [old_out]
+            
+            # Duplicate selected neurons
+            dup_weight = linear_weight[idx0.tolist(), :].clone()
+            
+            # Divide original and duplicates by 2
+            new_weight = linear_weight.clone()
+            new_weight[idx0.tolist(), :] /= 2.
+            dup_weight /= 2.
+            
+            # Concatenate: original + duplicates
+            new_weight = torch.cat((new_weight, dup_weight), 0)
+            
+            # Apply eigenvector perturbation
+            if idx1.size != 0 and layer_id_in_cfg in min_eig_vecs:
+                eig_v = min_eig_vecs[layer_id_in_cfg].astype(float)
+                eig_v = torch.from_numpy(eig_v).float().to(device)
+                
+                if len(eig_v.shape) == 2:
+                    # Perturb the split neurons
+                    new_weight[idx1.tolist(), :] += 1e-2 * eig_v[idx1.tolist(), :]
+                    new_weight[linear_weight.size(0):, :] -= 1e-2 * eig_v[idx1.tolist(), :]
+                    print(f"  Applied eigenvector perturbation")
+                else:
+                    print(f"  Warning: Unexpected eig_v shape: {eig_v.shape}")
+            
+            # Assign to new model
+            m1.linear.weight.data = new_weight.clone()
+            m1.linear.bias.data = linear_bias.clone()
+            
+            print(f"  New weight shape: {m1.linear.weight.shape}")
         
-        # update the linear weights for the current layer
-        linear_weight = m0.linear.weight.data.clone()  # old [out, in]
-        if idx1.size != 0:
-            linear_weight[idx1.tolist(), :] /= 2.
-        # print(f" concatenate linear_weight shape: {linear_weight.shape}, linear_weight[idx1.tolist(), :].shape: {linear_weight[idx1.tolist(), :].shape}")
-        # print(f" idx0 size: {idx0.size}, idx1 size: {idx1.size}")
-        w1 = torch.cat((linear_weight, linear_weight[idx1.tolist(), :]), 0)
-        eig_v = min_eig_vecs[layer_id_in_cfg].astype(float)
-        eig_v = torch.from_numpy(eig_v).float().to(device)
-        if idx1.size != 0:
-            eig_v[idx1.tolist(), :] /= 2.
-        eig_v = torch.cat((eig_v, eig_v[idx1.tolist(), :]), 0)
-        w1[idx1.tolist(), :] += 1e-2 * eig_v[idx1.tolist(), :]
-        # print(f"  w1 shape: {w1.shape}, eig_v shape: {eig_v.shape}")
-        # print(f"  linear_weight shape: {linear_weight.shape}, idx0 size: {idx0.size}, idx1 size: {idx1.size}")
-        # print(f"  w1[linear_weight.size(0):, :].shape: {w1[linear_weight.size(0):, :].shape}, eig_v[idx1.tolist(), :].shape: {eig_v[idx1.tolist(), :].shape}")
-        w1[linear_weight.size(0):, :] -= 1e-2 * eig_v[idx1.tolist(), :]
-        m1.linear.weight.data = w1.clone()
-        m1.linear.bias.data = torch.cat((m0.linear.bias.data.clone(), m0.linear.bias.data.clone()[idx1.tolist()]), 0)
+        # Copy activation and dummy settings
+        m1.activation = m0.activation
+        m1.apply_dummy = m0.apply_dummy
         
         # Move to next layer in config
         layer_id_in_cfg += 1
@@ -267,36 +309,36 @@ for k, (m0, m1) in enumerate(zip(model.layers, newmodel.layers)):
         if layer_id_in_cfg < len(cfg_mask):
             end_mask = cfg_mask[layer_id_in_cfg]
         print(f"  start_mask: {start_mask}, end_mask: {end_mask if layer_id_in_cfg < len(cfg_mask) else 'end'}")
+            
+    # Handle final linear layer
+    elif isinstance(m0, nn.Linear) and not isinstance(m0, SpLinearBlock):
+        print(f">>> Splitting final Linear at k={k}")
+        print(f"  Old weight: {m0.weight.shape}, New weight: {m1.weight.shape}")
+        print(f"  start_mask: {start_mask}")
         
-# Handle final linear layer
-print(f">>> Splitting final Linear at k={k}")
-print(f"  Old weight: {model.linear.weight.shape}, New weight: {newmodel.linear.weight.shape}")
-print(f"  start_mask: {start_mask}")
-
-idx0 = np.squeeze(np.asarray(start_mask))
-print(f"  idx0: {idx0}")
-
-if idx0.size == 0:
-    # No splitting needed
-    print(f"  No splitting needed, just copying weights and bias")
-    newmodel.linear.weight.data = model.linear.weight.data.clone()
-    newmodel.linear.bias.data = model.linear.bias.data.clone()
-    print(f"  No splitting needed, just copied")
-else:
-    if idx0.size == 1:
-        idx0 = np.resize(idx0, (1,))
-    
-    print(f"fc_weight shape: {model.linear.weight.shape}, fc_bias shape: {model.linear.bias.shape}")
-    fc_weight = model.linear.weight.data.clone()
-    fc_weight[:, idx0.tolist()] /= 2.
-    fc_bias = model.linear.bias.data.clone()
-
-    # Duplicate the input connections
-    dup_weight = fc_weight[:, idx0.tolist()].clone()
-    newmodel.linear.weight.data = torch.cat((fc_weight, dup_weight), 1)
-    newmodel.linear.bias.data = fc_bias.clone()
-    
-    print(f"  New weight shape: {newmodel.linear.weight.shape}")
+        idx0 = np.squeeze(np.asarray(start_mask))
+        print(f"  idx0: {idx0}")
+        
+        if idx0.size == 0:
+            # No splitting needed
+            m1.weight.data = m0.weight.data.clone()
+            m1.bias.data = m0.bias.data.clone()
+            print(f"  No splitting needed, just copied")
+        else:
+            if idx0.size == 1:
+                idx0 = np.resize(idx0, (1,))
+            
+            print(f"fc_weight shape: {m0.weight.shape}, fc_bias shape: {m0.bias.shape}")
+            fc_weight = m0.weight.data.clone()
+            fc_weight[:, idx0.tolist()] /= 2.
+            fc_bias = m0.bias.data.clone()
+            
+            # Duplicate the input connections
+            dup_weight = fc_weight[:, idx0.tolist()].clone()
+            m1.weight.data = torch.cat((fc_weight, dup_weight), 1)
+            m1.bias.data = fc_bias.clone()
+            
+            print(f"  New weight shape: {m1.weight.shape}")
 
 # VERIFICATION: Print final shapes
 print("=" * 60)
