@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import pandas as pd
+from tqdm import tqdm
 from torchvision import datasets, transforms
 from torch.autograd import Variable
 
@@ -115,7 +116,7 @@ if args.regression:
     try:
         from regression_dataloader import get_dataloader
         train_loader, test_loader = get_dataloader(
-            dataset=args.dataset,
+            args.dataset,
             train_batch_size=args.batch_size,
             test_batch_size=args.test_batch_size,
             use_cuda=args.cuda,
@@ -130,7 +131,7 @@ if args.regression:
 else:
     from dataloader import get_data_loader
     train_loader, test_loader = get_data_loader(
-        dataset=args.dataset,
+        args.dataset,
         train_batch_size=args.batch_size,
         test_batch_size=args.test_batch_size,
         use_cuda=args.cuda
@@ -178,95 +179,60 @@ def train(epoch):
         data, target = data.to(device), target.to(device)
         data, target = Variable(data), Variable(target)
         
-        # # Debug: Check data stats
-        # if batch_idx == 0:
-        #     print(f"Data min: {data.min().item():.4f}, max: {data.max().item():.4f}")
-        #     print(f"Data mean: {data.mean().item():.4f}, std: {data.std().item():.4f}")
-        #     print(f"Target min: {target.min().item():.4f}, max: {target.max().item():.4f}")
-        #     print(f"Target mean: {target.mean().item():.4f}, std: {target.std().item():.4f}")
-        
         optimizer.zero_grad()
         output = model(data)
-        
-        if args.regression:
-            loss = F.mse_loss(output, target)
-            
-            # # DEBUG: Print first batch stats
-            # if batch_idx == 0:
-            #     print(f"Output - min: {output.min().item():.4f}, max: {output.max().item():.4f}, mean: {output.mean().item():.4f}")
-            #     print(f"Target - min: {target.min().item():.4f}, max: {target.max().item():.4f}, mean: {target.mean().item():.4f}")
-            #     print(f"MSE Loss: {loss.item():.6f}")
-        else:
-            loss = F.cross_entropy(output, target)
-            
+        loss = F.mse_loss(output, target, reduction='none') # Use 'none' to get per-sample loss
         avg_loss += loss.data
         
-        if not args.regression:
-            pred = output.data.max(1, keepdim=True)[1]
-            train_acc += pred.eq(target.data.view_as(pred)).cpu().sum()
-            
-        loss.backward()
-        if args.sr:
-            updateBN()
+        loss.mean().backward()
         optimizer.step()
         
-        if batch_idx % args.log_interval == 0:
-            # log.info('Train Epoch: {} [{}/{} ({:.1f}%)]\tLoss: {:.6f}'.format(
-            #     epoch, batch_idx * len(data), len(train_loader.dataset),
-            #     100. * batch_idx / len(train_loader), loss.data))
-            log.info(f"Train Epoch: {epoch} \tLoss: {loss.data:.6f}")
-        
-        return avg_loss # TODO may want to check if this is the average loss or just the last batch loss when using different dataset. ok for rastrigin and rosenbrock
+    return avg_loss.mean().item() 
     
 def test():
     model.eval()
     test_loss = 0
-    correct = 0
     
     for data, target in test_loader:
         data, target = data.to(device), target.to(device)
         data, target = Variable(data, volatile=True), Variable(target)
         output = model(data)
-        
-        if args.regression:
-            # Use sum for proper averaging
-            test_loss += F.mse_loss(output, target, reduction='mean').item()
-        else:
-            test_loss += F.cross_entropy(output, target, reduction='sum').item()
-            pred = output.data.max(1, keepdim=True)[1]
-            correct += pred.eq(target.data.view_as(pred)).cpu().numpy().sum()
 
-    # test_loss /= len(test_loader.dataset)
+        test_loss += F.mse_loss(output, target, reduction='none')
     
-    if args.regression:
-        log.info('\nTest set: Average MSE: {:.6f}\n'.format(test_loss))
-        # For regression, return MSE (lower is better)
-        return test_loss
-    else:
-        log.info('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.format(
-            test_loss, correct, len(test_loader.dataset),
-            100. * correct / float(len(test_loader.dataset))))
-        return correct / float(len(test_loader.dataset))
+    return test_loss.mean().item()
 
 def save_checkpoint(state, model_path):
     torch.save(state, model_path)
 
 # Set initial value for best loss
 best_loss = float('inf')  # Start with highest loss. For MSE, lower is better.
+# Set initial running loss
+train_loss = 0.0
+test_loss = 0.0
 
 curr_lr = args.lr
 if args.regression:
     curr_lr = args.lr * 0.1  # Lower LR for regression
 
+# TQDM
+epoch_bar = tqdm(
+    range(args.start_epoch, args.epochs),
+    desc=f'Epochs Progress',
+    position=0,
+    leave=True,
+)
+
 # Az, datalogging purpose
 dct = {'train_loss': [], 'test_loss': []}
 
-for epoch in range(args.start_epoch, args.epochs):
-    if epoch in [int(args.epochs * 0.5), int(args.epochs * 0.75)]:
-        for param_group in optimizer.param_groups:
-            param_group['lr'] *= 0.1
-            curr_lr *= 0.1
-    log.info('{}, {}'.format(epoch, curr_lr))
+for epoch in epoch_bar:
+    
+    # if epoch in [int(args.epochs * 0.5), int(args.epochs * 0.75)]:
+    #     for param_group in optimizer.param_groups:
+    #         param_group['lr'] *= 0.1
+    #         curr_lr *= 0.1
+    # log.info('{}, {}'.format(epoch, curr_lr))
 
     train_loss = train(epoch)
     test_loss = test()
@@ -277,8 +243,8 @@ for epoch in range(args.start_epoch, args.epochs):
     is_best = test_loss < best_loss
     best_loss = min(test_loss, best_loss)
         
-    log.info('Best: {:.6f}'.format(best_loss))
-    log.info(f"Current: {test_loss:.6f} ")
+    # log.info('Best: {:.6f}'.format(best_loss))
+    # log.info(f"Current: {test_loss:.6f} ")
     
     torch.save({
         'epoch': epoch + 1,
@@ -289,6 +255,14 @@ for epoch in range(args.start_epoch, args.epochs):
         'best_loss': best_loss,
         'optimizer': optimizer.state_dict(),
     }, os.path.join(args.save, model_save_path))
+    
+    # update tqdm
+    epoch_bar.set_description(
+        f'Epoch {epoch+1}/{args.epochs} | '
+        f'Best Loss: {best_loss:.6f} | '
+        f'Train: {train_loss:.6f} | '
+        f'Test: {test_loss:.6f}'
+    )
     
 df = pd.DataFrame(dct)
 df.to_csv(os.path.join(args.save, f'{args.dataset}_loss_log.csv'), index=False)

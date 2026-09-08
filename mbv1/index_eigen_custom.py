@@ -2,7 +2,7 @@ import pickle
 import numpy as np
 import sys
 
-HARD_LIMIT = 20  # Default hard limit for eigenvalue thresholding
+HARD_LIMIT = 500  # Default hard limit for eigenvalue thresholding
 
 def eigen(num, layer_num, dataset):
     num = str(num)

@@ -123,7 +123,7 @@ class SimpleModel(nn.Module):
     def __init__(self, cfg=None, dataset='cifar10', activation='relu', dummy_layer=-1):
         super(SimpleModel, self).__init__()
         if cfg is None:
-            if dataset == 'rosenbrock' or dataset == 'rastrin':
+            if dataset == 'rosenbrock' or dataset == 'rastrigin':
                 self.cfg = regression
             else:
                 self.cfg = classification
@@ -135,7 +135,7 @@ class SimpleModel(nn.Module):
         self.activation = activation
         self.layers = self._make_layers()
         
-        if dataset == 'rosenbrock' or dataset == 'rastrin':
+        if dataset == 'rosenbrock' or dataset == 'rastrigin':
             self.linear = nn.Linear(self.cfg[-1][1], 1)
         else:
             raise NotImplementedError

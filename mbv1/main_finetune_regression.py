@@ -12,6 +12,7 @@ from torch.autograd import Variable
 import pickle
 import sys
 from numpy import linalg as LA
+from tqdm import tqdm
 from compute_flops import print_model_param_nums, print_model_param_flops
 import json
 
@@ -68,6 +69,7 @@ parser.add_argument('--hidden-dim', type=int, default=3,
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
+device = torch.device('cuda') if args.cuda else torch.device('cpu')
 
 # Import model
 if args.custom_model:
@@ -128,7 +130,7 @@ log.addHandler(ch)
 
 from regression_dataloader import get_dataloader
 train_loader, test_loader = get_dataloader(
-    dataset=args.dataset,
+    args.dataset,
     train_batch_size=args.batch_size,
     test_batch_size=args.test_batch_size,
     use_cuda=args.cuda,
@@ -167,16 +169,6 @@ if args.layer != -1:
 else:
     pickle.dump(model.cfg, open('config/{}_{}.pkl'.format(args.dataset, str(args.rd + 1)), 'wb'))
 
-# # DEBUG: Check which layers have dummy enabled
-# print("=" * 50)
-# print(f"dummy_layer parameter: {args.layer}")
-# for i, layer in enumerate(model.layers):
-#     if hasattr(layer, 'apply_dummy'):
-#         print(f"Layer {i}: apply_dummy = {layer.apply_dummy}, has dummy: {hasattr(layer, 'dummy')}")
-#         if hasattr(layer, 'dummy'):
-#             print(f"  dummy length: {len(layer.dummy)}")
-# print("=" * 50)
-
 if not args.retrain:
     model.load_state_dict(checkpoint['state_dict'], strict=False)
 
@@ -189,78 +181,42 @@ optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, we
 def train(epoch):
     model.train()
     avg_loss = 0.
-    train_acc = 0.
+    
     for batch_idx, (data, target) in enumerate(train_loader):
-        if args.warm == 1:
-            if epoch == 0:
-                for params_group in optimizer.param_groups:
-                    params_group['lr'] = args.lr * (batch_idx / 23)
-            if epoch == 1:
-                for params_group in optimizer.param_groups:
-                    params_group['lr'] = args.lr
-
-        if args.cuda:
-            data, target = data.cuda(), target.cuda()
+        data, target = data.to(device), target.to(device)
         data, target = Variable(data), Variable(target)
+        
         optimizer.zero_grad()
         output = model(data)
         
-        loss = F.mse_loss(output, target)    
+        loss = F.mse_loss(output, target, reduction='none') # Use 'none' to get per-sample loss
         avg_loss += loss.data
             
-        loss.backward()
+        loss.mean().backward()
         optimizer.step()
-        if batch_idx % args.log_interval == 0:
-            log.info('Train Epoch: {} [{}/{} ({:.1f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(data), len(train_loader.dataset),
-                100. * batch_idx / len(train_loader), loss.data))
+        
+    return avg_loss.mean().item() 
 
 def compute_A(epoch):
     model.eval()
     avg_loss = 0.
-    train_acc = 0.
     count = 0
     A = 0
     
     for batch_idx, (data, target) in enumerate(train_loader):
-        if args.cuda:
-            data, target = data.cuda(), target.cuda()
+        data, target = data.to(device), target.to(device)
         data, target = Variable(data), Variable(target)
+        
         optimizer.zero_grad()
-        
+
         layer = args.layer
-        
-        # # DEBUG 1: Check dummy before forward
-        # print(f"\n{'='*50}")
-        # print(f"Batch {batch_idx}")
-        # print(f"Layer {layer} dummy before sp_forward: {len(model.layers[layer].dummy)}")
         
         # Call sp_forward
         output = model.sp_forward(data)
+        loss = F.mse_loss(output, target, reduction='none') # Use 'none' to get per-sample loss
+        avg_loss += loss.data
         
-        # # DEBUG 2: Check dummy after forward
-        # print(f"Layer {layer} dummy after sp_forward: {len(model.layers[layer].dummy)}")
-        # if len(model.layers[layer].dummy) > 0:
-        #     print(f"  dummy[0] type: {type(model.layers[layer].dummy[0])}")
-        #     print(f"  dummy[0] requires_grad: {model.layers[layer].dummy[0].requires_grad}")
-        
-        # MINIMAL CHANGE: Use MSE for regression, cross-entropy for classification
-        loss = F.mse_loss(output, target)
-        
-        # # DEBUG 3: Check before backward
-        # print(f"Loss value: {loss.item()}")
-        # print(f"Loss requires_grad: {loss.requires_grad}")
-        
-        loss.backward()
-        
-        # # DEBUG 4: Check gradients after backward
-        # print(f"After backward:")
-        # for i, item in enumerate(model.layers[layer].dummy):
-        #     if item.grad is not None:
-        #         print(f"  dummy {i} grad shape: {item.grad.shape}")
-        #         print(f"  dummy {i} grad mean: {item.grad.mean().item()}")
-        #     else:
-        #         print(f"  dummy {i} grad is None!")
+        loss.mean().backward()
         
         # Collect gradients
         a = [item.grad.data.cpu().numpy() for item in model.layers[layer].dummy]
@@ -284,16 +240,13 @@ def compute_A(epoch):
                 A += a
         count += 1
         
-        # Only process first 2 batches for debugging
-        if batch_idx >= 1:
-            break
     
-    print(f"\n{'='*50}")
-    print(f"Final A shape: {A.shape if A.shape != (0,) else 'empty'}")
-    
-    if A.shape == (0,):
-        print("ERROR: A is empty! Cannot calculate eigen.")
-        return
+    # print(f"\n{'='*50}")
+    # print(f"Final A shape: {A.shape if A.shape != (0,) else 'empty'}")
+
+    # if A.shape == (0,):
+    #     print("ERROR: A is empty! Cannot calculate eigen.")
+    #     return
     
     A = np.array(A)
     A = A / count
@@ -322,31 +275,34 @@ def calculate_eigen(A, layer, rd=0):
 def test():
     model.eval()
     test_loss = 0
-    correct = 0
     
     for data, target in test_loader:
-        if args.cuda:
-            data, target = data.cuda(), target.cuda()
+        data, target = data.to(device), target.to(device)
         data, target = Variable(data), Variable(target)
         output = model(data)
         
-        test_loss += F.mse_loss(output, target, size_average=False).data
-        
-    test_loss /= len(test_loader.dataset) # TODO from original code, may not needed for regression
+        test_loss += F.mse_loss(output, target, reduction='none')
     
-    # MINIMAL CHANGE: Different logging for regression vs classification
-    log.info('\nTest set: Average MSE: {:.6f}\n'.format(test_loss))
-    return test_loss  # Return loss for regression
+    return test_loss.mean().item()  # Return loss for regression
 
 
 # MINIMAL CHANGE: Initialize loss before loop
-loss = None
+train_loss = 0.0
+test_loss = 0.0
 best_loss = float('inf')
 
+# TQDM
+epoch_bar = tqdm(
+    range(args.epochs),
+    desc=f'Epochs Progress',
+    position=0,
+    leave=True,
+)
+
 for epoch in range(args.epochs):
-    if epoch in [int(args.epochs * 0.5), int(args.epochs * 0.75)]:
-        for param_group in optimizer.param_groups:
-            param_group['lr'] *= 0.1
+    # if epoch in [int(args.epochs * 0.5), int(args.epochs * 0.75)]:
+    #     for param_group in optimizer.param_groups:
+    #         param_group['lr'] *= 0.1
     
     if args.layer != -1:
         compute_A(epoch)
@@ -367,6 +323,14 @@ for epoch in range(args.epochs):
         'optimizer': optimizer.state_dict(),
         'acc': test_loss,
     }, model_save_path)
+    
+    # update tqdm
+    epoch_bar.set_description(
+        f'Epoch {epoch+1}/{args.epochs} | '
+        f'Best Loss: {best_loss:.6f} | '
+        f'Train: {train_loss:.6f} | '
+        f'Test: {test_loss:.6f}'
+    )
 
 # Only save results if we actually trained (not just computed A)
 if test_loss is not None:

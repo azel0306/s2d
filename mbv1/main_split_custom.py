@@ -79,7 +79,7 @@ if args.regression:
     try:
         from regression_dataloader import get_dataloader
         train_loader, test_loader = get_dataloader(
-            dataset=args.dataset,
+            args.dataset,
             train_batch_size=args.batch_size,
             test_batch_size=args.test_batch_size,
             use_cuda=args.cuda,
@@ -93,7 +93,7 @@ if args.regression:
 else:
     from dataloader import get_dataloader
     train_loader, test_loader = get_dataloader(
-        dataset=args.dataset,
+        args.dataset,
         train_batch_size=args.batch_size,
         test_batch_size=args.test_batch_size,
         use_cuda=args.cuda
