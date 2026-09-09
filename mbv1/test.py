@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from math import pi
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,21 +9,71 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
+torch.manual_seed(20260908)  # For reproducibility
+# CONSTANTS
+dataset_name = 'rastrigin'  # Change to 'xsquare' or 'cosine' for other datasets
+batch_size = 256
+epochs = 400
+
+if dataset_name == 'rastrigin':
+    x_min = 0
+    x_max = pi/2
+    y_padding = 5
+    noise_std = 0.0
+    num_samples = 256
+elif dataset_name == 'xsquare':
+    x_min = -5.0
+    x_max = 5.0
+    y_padding = 2
+    noise_std = 0.0
+    num_samples = 256
+elif dataset_name == 'cosine':
+    x_min = 0
+    x_max = 2*pi
+    y_padding = 0.5
+    noise_std = 0.0
+    num_samples = 256
+
 # ==================== DATA GENERATION ====================
 
-def generate_rastrigin(num_samples=500, x_min=-5.12, x_max=5.12, noise_std=0.02):
+def generate_rastrigin(num_samples=256, x_min=-5.12, x_max=5.12, noise_std=0.02):
     """Generate 1D Rastrigin dataset with noise only in inputs."""
     x_true = torch.rand(num_samples) * (x_max - x_min) + x_min
     x_noisy = x_true + torch.randn_like(x_true) * noise_std * (x_max - x_min)
     y = 10 + x_noisy**2 - 10 * torch.cos(2 * np.pi * x_noisy)
     return x_noisy.unsqueeze(1).float(), y.unsqueeze(1).float()
 
+def generate_xsquare(num_samples=256, x_min=-2.0, x_max=2.0, noise_std=0.02):
+    """Generate 1D X^2 dataset with noise."""
+    x_true = torch.rand(num_samples) * (x_max - x_min) + x_min
+    x_noisy = x_true + torch.randn_like(x_true) * noise_std * (x_max - x_min)
+    y = x_noisy**2
+    return x_noisy.unsqueeze(1).float(), y.unsqueeze(1).float()
+
+def generate_cosine(num_samples=256, x_min=-2.0, x_max=2.0, noise_std=0.02):
+    """Generate 1D Cosine dataset with noise."""
+    x_true = torch.rand(num_samples) * (x_max - x_min) + x_min
+    x_noisy = x_true + torch.randn_like(x_true) * noise_std * (x_max - x_min)
+    y = torch.cos(x_noisy)
+    return x_noisy.unsqueeze(1).float(), y.unsqueeze(1).float()
+
 # ==================== ARCHITECTURES ====================
 
 def create_architecture(name, hidden_size=64, num_layers=2):
     """Create different model architectures."""
-    
-    if name == 'Shallow_64':
+    if name == 'Shallow_8':
+        return nn.Sequential(
+            nn.Linear(1, 8),
+            nn.ReLU(),
+            nn.Linear(8, 1)
+        )
+    elif name == 'Shallow_32':
+        return nn.Sequential(
+            nn.Linear(1, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1)
+        )
+    elif name == 'Shallow_64':
         return nn.Sequential(
             nn.Linear(1, 64),
             nn.ReLU(),
@@ -109,7 +160,7 @@ def create_architecture(name, hidden_size=64, num_layers=2):
             nn.Linear(64, 1)
         )
     
-    elif name == 'WithBatchNorm':
+    elif name == 'WithBatchNorm_64x3':
         return nn.Sequential(
             nn.Linear(1, 64),
             nn.BatchNorm1d(64),
@@ -237,8 +288,8 @@ def plot_predictions(models_dict, x_test_plot, y_true, title_prefix="", device='
         ax.set_title(f'{name}\nMSE: {mse:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}')
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
-        ax.set_xlim(-5.5, 5.5)
-        ax.set_ylim(-5, 45)
+        ax.set_xlim(x_min-0.5, x_max+0.5)
+        ax.set_ylim(y_true.min().item() - y_padding, y_true.max().item() + y_padding)
     
     # Hide empty subplots
     for idx in range(len(models_dict), len(axes)):
@@ -391,12 +442,18 @@ def compare_architectures():
     """Compare all architectures on Rastrigin without normalization."""
     
     print("=" * 70)
-    print("COMPARING ARCHITECTURES ON RASTRIGIN (WITHOUT NORMALIZATION)")
+    print(f"COMPARING ARCHITECTURES ON {dataset_name.upper()} (WITHOUT NORMALIZATION)")
     print("=" * 70)
     
     # Generate data
-    print("\n📊 Generating data...")
-    x, y = generate_rastrigin(num_samples=600)
+    
+    print(f"\n📊 Generating {dataset_name.upper()} data...")
+    if dataset_name == 'rastrigin':
+        x, y = generate_rastrigin(num_samples=num_samples, x_min=x_min, x_max=x_max, noise_std=noise_std)
+    elif dataset_name == 'xsquare':
+        x, y = generate_xsquare(num_samples=num_samples, x_min=x_min, x_max=x_max, noise_std=noise_std)
+    elif dataset_name == 'cosine':
+        x, y = generate_cosine(num_samples=num_samples, x_min=x_min, x_max=x_max, noise_std=noise_std)
     print(f"x range: [{x.min():.3f}, {x.max():.3f}]")
     print(f"y range: [{y.min():.3f}, {y.max():.3f}]")
     
@@ -411,6 +468,8 @@ def compare_architectures():
     
     # Architectures to compare
     architectures = [
+        'Shallow_8',
+        'Shallow_32',
         'Shallow_64',
         'Shallow_256',
         'Shallow_512',
@@ -420,7 +479,7 @@ def compare_architectures():
         'Deep_128x3',
         'LeakyReLU_64x3',
         'Tanh_64x3',
-        'WithBatchNorm'
+        'WithBatchNorm_64x3'
     ]
     
     # Train each architecture
@@ -444,7 +503,7 @@ def compare_architectures():
         # Train
         model, train_losses, test_losses = train_model(
             model, train_loader, test_loader, 
-            epochs=200, lr=lr, device=device
+            epochs=epochs, lr=lr, device=device
         )
         
         # Store results
@@ -462,11 +521,16 @@ def compare_architectures():
     # ==================== VISUALIZATION ====================
     
     # Generate test data for visualization
-    x_test_plot = torch.linspace(-5.12, 5.12, 1000).unsqueeze(1)
-    y_true = 10 + x_test_plot**2 - 10 * torch.cos(2 * np.pi * x_test_plot)
-    
+    x_test_plot = torch.linspace(x_min, x_max, num_samples).unsqueeze(1)
+    if dataset_name == 'rastrigin':
+        y_true = 10 + x_test_plot**2 - 10 * torch.cos(2 * np.pi * x_test_plot)
+    elif dataset_name == 'xsquare':
+        y_true = x_test_plot**2
+    elif dataset_name == 'cosine':
+        y_true = torch.cos(x_test_plot)
+
     # 1. Training curves comparison
-    fig, axes = plt.subplots(2, 5, figsize=(20, 10))
+    fig, axes = plt.subplots(3, 4, figsize=(20, 10))
     axes = axes.flatten()
     
     for idx, (name, result) in enumerate(results.items()):
@@ -513,145 +577,147 @@ def compare_architectures():
     plot_predictions(models_dict, x_test_plot, y_true, 
                     "Individual Model", device=device)
     
-    # 4. Comprehensive comparison
-    print("\n📊 Plotting comprehensive comparison...")
-    plot_comprehensive_comparison(results, x_test_plot, y_true, device=device)
+    # # 4. Comprehensive comparison
+    # print("\n📊 Plotting comprehensive comparison...")
+    # plot_comprehensive_comparison(results, x_test_plot, y_true, device=device)
     
-    # 5. Best model detailed analysis
-    best_name = min(results.keys(), key=lambda k: results[k]['final_test_loss'])
-    best_model = results[best_name]['model']
-    best_loss = results[best_name]['final_test_loss']
+    # # 5. Best model detailed analysis
+    # best_name = min(results.keys(), key=lambda k: results[k]['final_test_loss'])
+    # best_model = results[best_name]['model']
+    # best_loss = results[best_name]['final_test_loss']
     
-    print(f"\n🏆 Best Model: {best_name}")
-    print(f"   Test MSE: {best_loss:.4f}")
-    print(f"   RMSE: {np.sqrt(best_loss):.4f}")
-    print(f"   Parameters: {results[best_name]['params']:,}")
+    # print(f"\n🏆 Best Model: {best_name}")
+    # print(f"   Test MSE: {best_loss:.4f}")
+    # print(f"   RMSE: {np.sqrt(best_loss):.4f}")
+    # print(f"   Parameters: {results[best_name]['params']:,}")
     
-    # Detailed best model visualization
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    # # Detailed best model visualization
+    # fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     
-    best_model.eval()
-    with torch.no_grad():
-        y_pred = best_model(x_test_plot.to(device))
+    # best_model.eval()
+    # with torch.no_grad():
+    #     y_pred = best_model(x_test_plot.to(device))
     
-    # Move to CPU for plotting
-    x_test_cpu = x_test_plot.cpu().numpy()
-    y_true_cpu = y_true.cpu().numpy()
-    y_pred_cpu = y_pred.cpu().numpy()
+    # # Move to CPU for plotting
+    # x_test_cpu = x_test_plot.cpu().numpy()
+    # y_true_cpu = y_true.cpu().numpy()
+    # y_pred_cpu = y_pred.cpu().numpy()
     
-    # 5a. Prediction vs truth
-    ax = axes[0, 0]
-    ax.plot(x_test_cpu, y_true_cpu, 'b-', label='Ground Truth', linewidth=2)
-    ax.plot(x_test_cpu, y_pred_cpu, 'r--', label='Prediction', linewidth=2)
-    ax.fill_between(x_test_cpu.flatten(),
-                   (y_true_cpu - np.sqrt(best_loss)).flatten(),
-                   (y_true_cpu + np.sqrt(best_loss)).flatten(),
-                   alpha=0.2, color='green', label=f'±RMSE ({np.sqrt(best_loss):.4f})')
-    ax.set_xlabel('x')
-    ax.set_ylabel('f(x)')
-    ax.set_title(f'Best Model: {best_name}\nMSE: {best_loss:.4f}, RMSE: {np.sqrt(best_loss):.4f}')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    # # 5a. Prediction vs truth
+    # ax = axes[0, 0]
+    # ax.plot(x_test_cpu, y_true_cpu, 'b-', label='Ground Truth', linewidth=2)
+    # ax.plot(x_test_cpu, y_pred_cpu, 'r--', label='Prediction', linewidth=2)
+    # ax.fill_between(x_test_cpu.flatten(),
+    #                (y_true_cpu - np.sqrt(best_loss)).flatten(),
+    #                (y_true_cpu + np.sqrt(best_loss)).flatten(),
+    #                alpha=0.2, color='green', label=f'±RMSE ({np.sqrt(best_loss):.4f})')
+    # ax.set_xlabel('x')
+    # ax.set_ylabel('f(x)')
+    # ax.set_title(f'Best Model: {best_name}\nMSE: {best_loss:.4f}, RMSE: {np.sqrt(best_loss):.4f}')
+    # ax.legend()
+    # ax.grid(True, alpha=0.3)
     
-    # 5b. Error distribution
-    ax = axes[0, 1]
-    errors = (y_pred - y_true).cpu().numpy().flatten()
-    ax.hist(errors, bins=50, alpha=0.7, edgecolor='black', color='blue', density=True)
-    ax.axvline(x=0, color='red', linestyle='--', linewidth=2, label='Zero Error')
-    ax.axvline(x=np.mean(errors), color='green', linestyle='--', linewidth=2, 
-               label=f'Mean: {np.mean(errors):.4f}')
-    ax.set_xlabel('Prediction Error')
-    ax.set_ylabel('Density')
-    ax.set_title(f'Error Distribution\nMean: {np.mean(errors):.4f}, Std: {np.std(errors):.4f}')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    # # 5b. Error distribution
+    # ax = axes[0, 1]
+    # y_pred = y_pred.cpu()
+    # y_true = y_true.cpu()
+    # errors = (y_pred - y_true).cpu().numpy().flatten()
+    # ax.hist(errors, bins=50, alpha=0.7, edgecolor='black', color='blue', density=True)
+    # ax.axvline(x=0, color='red', linestyle='--', linewidth=2, label='Zero Error')
+    # ax.axvline(x=np.mean(errors), color='green', linestyle='--', linewidth=2, 
+    #            label=f'Mean: {np.mean(errors):.4f}')
+    # ax.set_xlabel('Prediction Error')
+    # ax.set_ylabel('Density')
+    # ax.set_title(f'Error Distribution\nMean: {np.mean(errors):.4f}, Std: {np.std(errors):.4f}')
+    # ax.legend()
+    # ax.grid(True, alpha=0.3)
     
-    # 5c. Error vs x
-    ax = axes[0, 2]
-    ax.scatter(x_test_cpu.flatten(), errors, s=5, alpha=0.5, c='red')
-    ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
-    ax.axhline(y=np.sqrt(best_loss), color='red', linestyle='--', 
-               label=f'RMSE: {np.sqrt(best_loss):.4f}')
-    ax.axhline(y=-np.sqrt(best_loss), color='red', linestyle='--')
-    ax.set_xlabel('x')
-    ax.set_ylabel('Error')
-    ax.set_title('Error vs Input x')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    # # 5c. Error vs x
+    # ax = axes[0, 2]
+    # ax.scatter(x_test_cpu.flatten(), errors, s=5, alpha=0.5, c='red')
+    # ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
+    # ax.axhline(y=np.sqrt(best_loss), color='red', linestyle='--', 
+    #            label=f'RMSE: {np.sqrt(best_loss):.4f}')
+    # ax.axhline(y=-np.sqrt(best_loss), color='red', linestyle='--')
+    # ax.set_xlabel('x')
+    # ax.set_ylabel('Error')
+    # ax.set_title('Error vs Input x')
+    # ax.legend()
+    # ax.grid(True, alpha=0.3)
     
-    # 5d. Scatter plot
-    ax = axes[1, 0]
-    ax.scatter(y_true_cpu.flatten(), y_pred_cpu.flatten(), s=5, alpha=0.5, c='blue')
-    ax.plot([0, 45], [0, 45], 'r--', linewidth=2, label='Perfect Prediction')
-    ax.set_xlabel('True Values')
-    ax.set_ylabel('Predicted Values')
-    ax.set_title('Prediction vs Ground Truth Scatter')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(-2, 45)
-    ax.set_ylim(-2, 45)
+    # # 5d. Scatter plot
+    # ax = axes[1, 0]
+    # ax.scatter(y_true_cpu.flatten(), y_pred_cpu.flatten(), s=5, alpha=0.5, c='blue')
+    # ax.plot([0, 45], [0, 45], 'r--', linewidth=2, label='Perfect Prediction')
+    # ax.set_xlabel('True Values')
+    # ax.set_ylabel('Predicted Values')
+    # ax.set_title('Prediction vs Ground Truth Scatter')
+    # ax.legend()
+    # ax.grid(True, alpha=0.3)
+    # ax.set_xlim(-2, 45)
+    # ax.set_ylim(-2, 45)
     
-    # 5e. Residual plot
-    ax = axes[1, 1]
-    residuals = (y_pred - y_true).cpu().numpy().flatten()
-    ax.scatter(y_pred_cpu.flatten(), residuals, s=5, alpha=0.5, c='purple')
-    ax.axhline(y=0, color='red', linestyle='--', linewidth=2)
-    ax.set_xlabel('Predicted Values')
-    ax.set_ylabel('Residuals')
-    ax.set_title('Residual Plot')
-    ax.grid(True, alpha=0.3)
+    # # 5e. Residual plot
+    # ax = axes[1, 1]
+    # residuals = (y_pred - y_true).cpu().numpy().flatten()
+    # ax.scatter(y_pred_cpu.flatten(), residuals, s=5, alpha=0.5, c='purple')
+    # ax.axhline(y=0, color='red', linestyle='--', linewidth=2)
+    # ax.set_xlabel('Predicted Values')
+    # ax.set_ylabel('Residuals')
+    # ax.set_title('Residual Plot')
+    # ax.grid(True, alpha=0.3)
     
-    # 5f. Q-Q plot
-    ax = axes[1, 2]
-    from scipy import stats
-    stats.probplot(residuals, dist="norm", plot=ax)
-    ax.set_title('Q-Q Plot of Residuals')
-    ax.grid(True, alpha=0.3)
+    # # 5f. Q-Q plot
+    # ax = axes[1, 2]
+    # from scipy import stats
+    # stats.probplot(residuals, dist="norm", plot=ax)
+    # ax.set_title('Q-Q Plot of Residuals')
+    # ax.grid(True, alpha=0.3)
     
-    plt.suptitle(f'Best Model Detailed Analysis: {best_name}', fontsize=14, y=1.02)
-    plt.tight_layout()
-    plt.show()
+    # plt.suptitle(f'Best Model Detailed Analysis: {best_name}', fontsize=14, y=1.02)
+    # plt.tight_layout()
+    # plt.show()
     
-    # 6. Summary table
-    fig, ax = plt.subplots(figsize=(14, 8))
-    ax.axis('tight')
-    ax.axis('off')
+    # # 6. Summary table
+    # fig, ax = plt.subplots(figsize=(14, 8))
+    # ax.axis('tight')
+    # ax.axis('off')
     
-    sorted_results = sorted(results.items(), key=lambda x: x[1]['final_test_loss'])
+    # sorted_results = sorted(results.items(), key=lambda x: x[1]['final_test_loss'])
     
-    table_data = []
-    for idx, (name, result) in enumerate(sorted_results, 1):
-        # Get predictions for this model
-        model = result['model']
-        model.eval()
-        with torch.no_grad():
-            y_pred = model(x_test_plot.to(device))
-        mse = nn.MSELoss()(y_pred, y_true.to(device)).item()
-        rmse = np.sqrt(mse)
-        mae = nn.L1Loss()(y_pred, y_true.to(device)).item()
-        r2 = 1 - (mse / torch.var(y_true.to(device)).item())
+    # table_data = []
+    # for idx, (name, result) in enumerate(sorted_results, 1):
+    #     # Get predictions for this model
+    #     model = result['model']
+    #     model.eval()
+    #     with torch.no_grad():
+    #         y_pred = model(x_test_plot.to(device))
+    #     mse = nn.MSELoss()(y_pred, y_true.to(device)).item()
+    #     rmse = np.sqrt(mse)
+    #     mae = nn.L1Loss()(y_pred, y_true.to(device)).item()
+    #     r2 = 1 - (mse / torch.var(y_true.to(device)).item())
         
-        table_data.append([
-            idx,
-            name,
-            f"{result['params']:,}",
-            f"{result['final_train_loss']:.4f}",
-            f"{result['final_test_loss']:.4f}",
-            f"{rmse:.4f}",
-            f"{mae:.4f}",
-            f"{r2:.4f}"
-        ])
+    #     table_data.append([
+    #         idx,
+    #         name,
+    #         f"{result['params']:,}",
+    #         f"{result['final_train_loss']:.4f}",
+    #         f"{result['final_test_loss']:.4f}",
+    #         f"{rmse:.4f}",
+    #         f"{mae:.4f}",
+    #         f"{r2:.4f}"
+    #     ])
     
-    columns = ['Rank', 'Architecture', 'Params', 'Train MSE', 'Test MSE', 'RMSE', 'MAE', 'R²']
-    table = ax.table(cellText=table_data, colLabels=columns, 
-                     cellLoc='center', loc='center',
-                     colColours=['#f0f0f0']*8)
-    table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    ax.set_title('All Models Comparison Table', fontsize=14, pad=20)
+    # columns = ['Rank', 'Architecture', 'Params', 'Train MSE', 'Test MSE', 'RMSE', 'MAE', 'R²']
+    # table = ax.table(cellText=table_data, colLabels=columns, 
+    #                  cellLoc='center', loc='center',
+    #                  colColours=['#f0f0f0']*8)
+    # table.auto_set_font_size(False)
+    # table.set_fontsize(10)
+    # ax.set_title('All Models Comparison Table', fontsize=14, pad=20)
     
-    plt.tight_layout()
-    plt.show()
+    # plt.tight_layout()
+    # plt.show()
     
     return results, best_name
 

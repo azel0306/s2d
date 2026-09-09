@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import pandas as pd
 from torchvision import datasets, transforms
 from torch.autograd import Variable
 import pickle
@@ -54,6 +55,8 @@ parser.add_argument('--rd', type=int, default=0,
 ### Az - Custom model flag
 parser.add_argument('--custom_model', action='store_true', default=False,
                     help='use custom model')
+parser.add_argument('--seed', type=int, default=1, metavar='S',
+                    help='random seed for model initialization (default: 1)')
 
 ### Az - Regression dataset flag
 parser.add_argument('--regression', action='store_true', default=False,
@@ -299,6 +302,8 @@ epoch_bar = tqdm(
     leave=True,
 )
 
+dct = {'train_loss': [], 'test_loss': []} # data logging purpose
+
 for epoch in range(args.epochs):
     # if epoch in [int(args.epochs * 0.5), int(args.epochs * 0.75)]:
     #     for param_group in optimizer.param_groups:
@@ -312,6 +317,9 @@ for epoch in range(args.epochs):
     
     train_loss = train(epoch)
     test_loss = test()
+    
+    dct['train_loss'].append(train_loss)
+    dct['test_loss'].append(test_loss)
     
     is_best = test_loss < best_loss  # Lower is better for regression
     best_loss = min(test_loss, best_loss)
@@ -340,3 +348,8 @@ if test_loss is not None:
     pickle.dump([test_loss, best_loss], open('result/{}_{}_result.pkl'.format(args.dataset, str(args.rd)), 'wb'))
 else:
     print("Skipping result save (only computed A for layer {})".format(args.layer))
+
+if args.layer == -1:
+    print("Saving loss log to CSV")
+    df = pd.DataFrame(dct)
+    df.to_csv(os.path.join(args.save, f'{args.dataset}_loss_log.csv'), index=False)
