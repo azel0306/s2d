@@ -96,7 +96,7 @@ class SpLinearBlock(nn.Module):
         for i in range(n_out):
             # Dummy variable for the i-th output neuron
             # Shape: [in_features, in_features] (matches author's dim x dim)
-            V = Variable(torch.zeros(dim, dim, device=x.device), requires_grad=True)
+            V = Variable(torch.zeros(dim, dim, device=x.device, dtype=torch.float64), requires_grad=True)
             self.dummy.append(V)
             
             # Compute x^T V x for each sample
@@ -154,7 +154,7 @@ class SimpleModel(nn.Module):
     def forward(self, x):
         """Standard forward pass"""
         out = x
-        for layer in self.layers:
+        for _, layer in enumerate(self.layers):
             out = layer(out)
         out = self.linear(out)  # Final layer without activation
         return out
@@ -165,7 +165,7 @@ class SimpleModel(nn.Module):
         This is called by main_finetune.py's compute_A()
         """
         out = x
-        for layer in self.layers:
+        for _, layer in enumerate(self.layers):
             out = layer.sp_forward(out)
         out = self.linear(out)  # Final layer without activation
         return out

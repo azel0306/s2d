@@ -12,7 +12,7 @@ def get_dataloader(dataset_name, train_batch_size=256,
     """
     
     if dataset_name == 'rastrigin':
-        df = pd.read_csv('data/rastrigin.csv', delimiter=',')
+        df = pd.read_csv('data/rastrigin_1d_pi.csv', delimiter=',')
             
         # Convert to float32 explicitly
         x = torch.tensor(df['x'].to_numpy(), dtype=torch.float32)
@@ -21,8 +21,11 @@ def get_dataloader(dataset_name, train_batch_size=256,
         train_ratio = 0.7
         test_ratio = 0.3
         
-        train_size = int(train_ratio * len(x))
-        test_size = len(x) - train_size
+        # train_size = int(train_ratio * len(x))
+        # test_size = len(x) - train_size
+        
+        train_size = 256
+        test_size = 64
         
         print(f"Train size: {train_size}, Test size: {test_size}")
         
@@ -33,6 +36,7 @@ def get_dataloader(dataset_name, train_batch_size=256,
         train_dataset, test_dataset = random_split(dataset, [train_size, test_size], generator=torch.Generator().manual_seed(20260908))
         train_loader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=False)  
+        print(f"Train batch size: {train_batch_size}, Test batch size: {test_batch_size}")
 
     elif dataset_name == 'rosenbrock':
         NotImplementedError("Rosenbrock dataset loading is not implemented yet.")

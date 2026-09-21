@@ -55,8 +55,6 @@ parser.add_argument('--rd', type=int, default=0,
 ### Az - Custom model flag
 parser.add_argument('--custom_model', action='store_true', default=False,
                     help='use custom model')
-parser.add_argument('--seed', type=int, default=1, metavar='S',
-                    help='random seed for model initialization (default: 1)')
 
 ### Az - Regression dataset flag
 parser.add_argument('--regression', action='store_true', default=False,
@@ -178,12 +176,15 @@ if not args.retrain:
 if args.cuda: 
     model.cuda()
 
+if args.layer != -1:
+    model = model.double()
+
 # Use SGD optimizer (same as author)
 optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
 def train(epoch):
     model.train()
-    avg_loss = 0.
+    avg_loss = []
     
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
@@ -193,21 +194,22 @@ def train(epoch):
         output = model(data)
         
         loss = F.mse_loss(output, target, reduction='none') # Use 'none' to get per-sample loss
-        avg_loss += loss.data
+        avg_loss.extend(loss.data.view(-1,).cpu().numpy())
             
         loss.mean().backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         
-    return avg_loss.mean().item() 
+    return np.array(avg_loss).mean()
 
 def compute_A(epoch):
     model.eval()
-    avg_loss = 0.
+    avg_loss = []
     count = 0
     A = 0
     
     for batch_idx, (data, target) in enumerate(train_loader):
-        data, target = data.to(device), target.to(device)
+        data, target = data.to(device).double(), target.to(device).double()
         data, target = Variable(data), Variable(target)
         
         optimizer.zero_grad()
@@ -217,7 +219,7 @@ def compute_A(epoch):
         # Call sp_forward
         output = model.sp_forward(data)
         loss = F.mse_loss(output, target, reduction='none') # Use 'none' to get per-sample loss
-        avg_loss += loss.data
+        avg_loss.extend(loss.data.view(-1,).cpu().numpy())
         
         loss.mean().backward()
         
@@ -241,15 +243,9 @@ def compute_A(epoch):
                 print("WARNING: A or a is empty, skipping accumulation")
             else:
                 A += a
-        count += 1
-        
+        count += 1        
     
-    # print(f"\n{'='*50}")
-    # print(f"Final A shape: {A.shape if A.shape != (0,) else 'empty'}")
-
-    # if A.shape == (0,):
-    #     print("ERROR: A is empty! Cannot calculate eigen.")
-    #     return
+    avg_loss = np.array(avg_loss).mean()
     
     A = np.array(A)
     A = A / count
@@ -277,16 +273,17 @@ def calculate_eigen(A, layer, rd=0):
 @torch.no_grad()
 def test():
     model.eval()
-    test_loss = 0
+    avg_loss = []
     
     for data, target in test_loader:
         data, target = data.to(device), target.to(device)
         data, target = Variable(data), Variable(target)
         output = model(data)
         
-        test_loss += F.mse_loss(output, target, reduction='none')
+        loss = F.mse_loss(output, target, reduction='none')
+        avg_loss.extend(loss.data.view(-1,).cpu().numpy())
     
-    return test_loss.mean().item()  # Return loss for regression
+    return np.array(avg_loss).mean()  # Return loss for regression
 
 
 # MINIMAL CHANGE: Initialize loss before loop

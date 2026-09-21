@@ -141,7 +141,10 @@ else:
 if args.custom_model:
     if args.regression:
         # Build cfg for regression
-        cfg = [(args.input_dim, args.hidden_dim)]
+        cfg = [(args.input_dim, args.hidden_dim), 
+               (args.hidden_dim, args.hidden_dim),
+               (args.hidden_dim, args.hidden_dim),
+               (args.hidden_dim, args.hidden_dim)]
         print(f"Model config: {cfg}")
     else:
         cfg = None
@@ -172,8 +175,7 @@ if args.regression:
 
 def train(epoch):
     model.train()
-    avg_loss = 0.
-    train_acc = 0.
+    avg_loss = []
     
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
@@ -182,25 +184,26 @@ def train(epoch):
         optimizer.zero_grad()
         output = model(data)
         loss = F.mse_loss(output, target, reduction='none') # Use 'none' to get per-sample loss
-        avg_loss += loss.data
+        avg_loss.extend(loss.data.view(-1,).cpu().numpy())
         
         loss.mean().backward()
         optimizer.step()
         
-    return avg_loss.mean().item() 
+    return np.array(avg_loss).mean()
     
 def test():
     model.eval()
-    test_loss = 0
+    avg_loss = []
     
     for data, target in test_loader:
         data, target = data.to(device), target.to(device)
         data, target = Variable(data, volatile=True), Variable(target)
         output = model(data)
 
-        test_loss += F.mse_loss(output, target, reduction='none')
+        loss = F.mse_loss(output, target, reduction='none')
+        avg_loss.extend(loss.data.view(-1,).cpu().numpy())
     
-    return test_loss.mean().item()
+    return np.array(avg_loss).mean()
 
 def save_checkpoint(state, model_path):
     torch.save(state, model_path)
