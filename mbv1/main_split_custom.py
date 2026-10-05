@@ -64,6 +64,8 @@ parser.add_argument('--output-dim', type=int, default=1,
                     help='output dimension for regression')
 parser.add_argument('--hidden-dim', type=int, default=32,
                     help='hidden dimension for regression model')
+parser.add_argument('--total-layers', type=int, default=3, 
+                    help="number of hidden layers to create")
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -80,13 +82,8 @@ if args.regression:
         from regression_dataloader import get_dataloader
         train_loader, test_loader = get_dataloader(
             args.dataset,
-            train_batch_size=args.batch_size,
-            test_batch_size=args.test_batch_size,
-            use_cuda=args.cuda,
-            input_dim=args.input_dim,
-            output_dim=args.output_dim,
-            normalize=False,
-            standardize=True
+            train_batch=args.batch_size,
+            test_batch=args.test_batch_size
         )
     except ImportError:
         NotImplementedError("Regression dataloader not found. Please ensure regression_dataloader.py is present.")
@@ -98,11 +95,16 @@ else:
         test_batch_size=args.test_batch_size,
         use_cuda=args.cuda
     )
-
 args.save = os.path.join(args.save, args.exp_name)
 
-logging_file_path = '{}_split_{}.log'.format(args.dataset, args.split_index)
-model_save_path = '{}_{}.pth.tar'.format(args.dataset, str(args.rd))
+subdir1 = f'{args.dataset}_hid{args.total_layers}_{args.hidden_dim}neuron'
+subdir2 = f'run_{args.seed}'
+
+logging_file_path = f'{args.dataset}_split_{args.split_index}.log'
+model_filename = f'{args.dataset}_{str(args.rd)}.pth.tar'
+
+args.save = os.path.join(args.save, subdir1, subdir2)
+print(args.save)
 
 if not os.path.exists(args.save):
     os.makedirs(args.save)
@@ -124,9 +126,21 @@ log.addHandler(fh)
 log.addHandler(ch)
 #########################################################
 
+# get correct model version
+subdir1 = f'{args.dataset}_hid{args.total_layers}_{args.hidden_dim}neuron'
+subdir2 = f'run_{args.seed}'
+
+print("#"*64)
+load_path = args.load.split('/')
+print(load_path)
+args.load = os.path.join(*load_path[:-1], subdir1, subdir2, load_path[-1])
+print(f"Using checkpoint {args.load}")
+print("#"*64)
+
 assert args.load
 assert os.path.isfile(args.load)
-log.info("=> loading checkpoint '{}'".format(args.load))
+log.info(f"=> loading checkpoint '{args.load}'")
+
 checkpoint = torch.load(args.load, weights_only=False)
 
 # Create model with proper cfg
@@ -300,6 +314,6 @@ torch.save({
     'split_index': args.split_index,
     'state_dict': newmodel.state_dict(),
     'args': args,
-}, os.path.join(args.save, model_save_path))
+}, os.path.join(args.save, model_filename))
 
-print(os.path.join(args.save, model_save_path))
+print(os.path.join(args.save, model_filename))

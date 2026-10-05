@@ -61,38 +61,56 @@ parser.add_argument('--output-dim', type=int, default=1,
                     help='output dimension for regression')
 parser.add_argument('--hidden-dim', type=int, default=3,
                     help='hidden dimension for regression model')
+parser.add_argument('--total-layers', type=int, default=3, help="number of hidden layers to create")
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 device = torch.device('cuda') if args.cuda else torch.device('cpu')
 
-print(args)
+print('\n' + '=' * 70)
+print('TRAINING CONFIGURATION')
+print('=' * 70)
+for key, value in vars(args).items():
+    label = key.replace('_', ' ').title()
+    print(f'{label:<14}: {value}')
+print('=' * 70 + '\n')
+
 
 torch.manual_seed(args.seed)
 if args.cuda:
     torch.cuda.manual_seed(args.seed)
     
 if args.custom_model:
-    from model_custom import SimpleModel as model
+    from model_custom import SimpleModel 
     
     logging_file = f'{args.dataset}.log'
-    model_save_path = f'{args.dataset}_0.pth.tar'
+    model_filename = f'{args.dataset}_0.pth.tar'
+    subdir1 = f'{args.dataset}_hid{args.total_layers}_{args.hidden_dim}neuron'
+    subdir2 = f'run_{args.seed}'
 
-else:
-    if args.sp:
-        from sp_mbnet import sp_mbnet as mbnet
-        from sp_mbnet import splitcfg
-    else:
-        from mobilenetv1 import MobileNetV1 as mbnet
-        from mobilenetv1 import MbBlock, ConvBlock
+    model_dir = os.path.join(args.save, subdir1, subdir2)
 
-    assert not (args.sr and args.sp)
+    if not os.path.exists(model_dir):
+        print(f'creating subfolder at {model_dir}')
+        os.makedirs(model_dir)
+
+    print(f"Model will be saved to... {model_dir}")
+
+# else:
+#     if args.sp:
+#         from sp_mbnet import sp_mbnet as mbnet
+#         from sp_mbnet import splitcfg
+#     else:
+#         from mobilenetv1 import MobileNetV1 as mbnet
+#         from mobilenetv1 import MbBlock, ConvBlock
+
+#     assert not (args.sr and args.sp)
     
-    logging_file = '{}.log'.format(args.dataset)
-    model_save_path = '{}_0.pth.tar'.format(args.dataset)
+#     logging_file = '{}.log'.format(args.dataset)
+#     model_save_path = '{}_0.pth.tar'.format(args.dataset)
 
-if not os.path.exists(args.save):
-    os.makedirs(args.save)
+#     if not os.path.exists(args.save):
+#         os.makedirs(args.save)
 
 #########################################################
 # create file handler which logs even debug messages
@@ -117,13 +135,10 @@ if args.regression:
         from regression_dataloader import get_dataloader
         train_loader, test_loader = get_dataloader(
             args.dataset,
-            train_batch_size=args.batch_size,
-            test_batch_size=args.test_batch_size,
-            use_cuda=args.cuda,
-            input_dim=args.input_dim,
-            output_dim=args.output_dim,
-            normalize=False,      # DON'T normalize inputs to [0,1]
-            standardize=True      # ONLY standardize outputs
+            train_batch=args.batch_size,
+            test_batch=args.test_batch_size,
+            normalize=False,      
+            standardize=False      
         )
     except ImportError:
         NotImplementedError("Regression dataloader not found. Please ensure regression_dataloader.py is present.")
@@ -141,14 +156,17 @@ else:
 if args.custom_model:
     if args.regression:
         # Build cfg for regression
-        cfg = [(args.input_dim, args.hidden_dim), 
-               (args.hidden_dim, args.hidden_dim),
-               (args.hidden_dim, args.hidden_dim),
-               (args.hidden_dim, args.hidden_dim)]
+        input_dim = args.input_dim
+        hidden_dim = args.hidden_dim
+        output_dim = args.output_dim
+        total_layers = args.total_layers
+        first_layer = (input_dim, hidden_dim)
+        subsequent_layers = [(hidden_dim, hidden_dim) for idx in range(total_layers-1)]
+        cfg = [first_layer, *subsequent_layers]
         print(f"Model config: {cfg}")
     else:
         cfg = None
-    model = model(cfg=cfg, dataset=args.dataset, activation='relu')
+    model = SimpleModel(cfg=cfg, dataset=args.dataset, activation='relu')
     print("Model details:", model)
     model.to(device)
 else:
@@ -157,21 +175,6 @@ else:
 
 # Use SGD optimizer
 optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-
-# For regression, use a lower learning rate
-if args.regression:
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = args.lr * 0.1  # Use 0.01 instead of 0.1
-
-# # additional subgradient descent on the sparsity-induced penalty term
-# def updateBN():
-#     if args.custom_model:
-#         return
-#     for m in model.modules():
-#         if isinstance(m, MbBlock):
-#             m.bn2.weight.grad.data.add_(args.s*torch.sign(m.bn2.weight.data))
-#         elif isinstance(m, ConvBlock):
-#             m.bn.weight.grad.data.add_(args.s*torch.sign(m.bn.weight.data))
 
 def train(epoch):
     model.train()
@@ -230,13 +233,6 @@ epoch_bar = tqdm(
 dct = {'train_loss': [], 'test_loss': []}
 
 for epoch in epoch_bar:
-    
-    # if epoch in [int(args.epochs * 0.5), int(args.epochs * 0.75)]:
-    #     for param_group in optimizer.param_groups:
-    #         param_group['lr'] *= 0.1
-    #         curr_lr *= 0.1
-    # log.info('{}, {}'.format(epoch, curr_lr))
-
     train_loss = train(epoch)
     test_loss = test()
     
@@ -245,9 +241,6 @@ for epoch in epoch_bar:
     
     is_best = test_loss < best_loss
     best_loss = min(test_loss, best_loss)
-        
-    # log.info('Best: {:.6f}'.format(best_loss))
-    # log.info(f"Current: {test_loss:.6f} ")
     
     torch.save({
         'epoch': epoch + 1,
@@ -257,7 +250,7 @@ for epoch in epoch_bar:
         'state_dict': model.state_dict(),
         'best_loss': best_loss,
         'optimizer': optimizer.state_dict(),
-    }, os.path.join(args.save, model_save_path))
+    }, os.path.join(model_dir, model_filename))
     
     # update tqdm
     epoch_bar.set_description(
@@ -268,4 +261,4 @@ for epoch in epoch_bar:
     )
     
 df = pd.DataFrame(dct)
-df.to_csv(os.path.join(args.save, f'{args.dataset}_loss_log.csv'), index=False)
+df.to_csv(os.path.join(model_dir, f'{args.dataset}_loss_log_0.csv'), index=False)

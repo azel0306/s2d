@@ -120,8 +120,10 @@ class SpLinearBlock(nn.Module):
 class SimpleModel(nn.Module):
     """Simple model with splitting capabilities - matches author's style"""
     
-    def __init__(self, cfg=None, dataset='cifar10', activation='relu', dummy_layer=-1):
+    def __init__(self, cfg=None, dataset='cifar10', activation='relu', dummy_layer=-1, seed=None):
         super(SimpleModel, self).__init__()
+        if seed is not None:
+            torch.manual_seed = seed
         if cfg is None:
             if dataset == 'rosenbrock' or dataset == 'rastrigin':
                 self.cfg = regression

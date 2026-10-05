@@ -67,6 +67,8 @@ parser.add_argument('--output-dim', type=int, default=1,
                     help='output dimension for regression')
 parser.add_argument('--hidden-dim', type=int, default=3,
                     help='hidden dimension for regression model')
+parser.add_argument('--total-layers', type=int, default=3, 
+                    help="number of hidden layers to create")
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -95,14 +97,23 @@ else:
 if not os.path.exists(args.save):
     os.makedirs(args.save)
 
+subdir1 = f'{args.dataset}_hid{args.total_layers}_{args.hidden_dim}neuron'
+subdir2 = f'run_{args.seed}'
+
 print("#"*64)
+load_path = args.load.split('/')
+print(load_path)
+args.load = os.path.join(*load_path[:-1], subdir1, subdir2, load_path[-1])
 print(f"Using checkpoint {args.load}")
 print("#"*64)
 
 checkpoint = torch.load(args.load, weights_only=False)
 
 if args.custom_model and args.layer == -1:
-    model_save_path = os.path.join(args.save,'{}_{}.pth.tar'.format(args.dataset, str(int(args.rd) + 1)))
+    subdir1 = f'{args.dataset}_hid{args.total_layers}_{args.hidden_dim}neuron'
+    subdir2 = f'run_{args.seed}'
+    model_save_path = os.path.join(args.save, subdir1, subdir2, f'{args.dataset}_{str(int(args.rd) + 1)}.pth.tar')
+
 elif args.sp and args.layer == -1 and not args.custom_model:
     model_save_path = os.path.join(args.save,'{}_{}.pth.tar'.format(args.dataset, str(int(args.rd) + 1)))
 
@@ -132,11 +143,8 @@ log.addHandler(ch)
 from regression_dataloader import get_dataloader
 train_loader, test_loader = get_dataloader(
     args.dataset,
-    train_batch_size=args.batch_size,
-    test_batch_size=args.test_batch_size,
-    use_cuda=args.cuda,
-    input_dim=args.input_dim,
-    output_dim=args.output_dim
+    train_batch=args.batch_size,
+    test_batch=args.test_batch_size
 )
 
 print("args.custom_model", args.custom_model)
@@ -148,20 +156,21 @@ if args.custom_model:
         cfg = checkpoint.get('cfg', None)
         if cfg is None:
             # If no cfg in checkpoint, create a simple cfg for regression
-            print("No cfg found in checkpoint, creating default regression cfg")
-            cfg = [(args.input_dim, args.hidden_dim), (args.hidden_dim, args.output_dim)]
+            print("No cfg found in checkpoint.")
+            cfg = None
         else:
             print("Using cfg from checkpoint:", cfg)
         print("layer", args.layer)
     else: 
     # Build cfg for classification
-        NotImplementedError
+        raise NotImplementedError
     
     model = custom_model(cfg=cfg, dataset=args.dataset, activation='relu', dummy_layer=args.layer)
 else:
     model = mbnet(cfg=checkpoint['cfg'], dataset=args.dataset, dummy_layer=args.layer)
 
 # load weights, otherwise, only the arch is used
+# TODO may need to change if want to keep individual model weights
 print("Model cfg:", model.cfg)
 if not os.path.exists('config'):
     os.makedirs('config')
@@ -204,7 +213,6 @@ def train(epoch):
 
 def compute_A(epoch):
     model.eval()
-    avg_loss = []
     count = 0
     A = 0
     
@@ -219,18 +227,17 @@ def compute_A(epoch):
         # Call sp_forward
         output = model.sp_forward(data)
         loss = F.mse_loss(output, target, reduction='none') # Use 'none' to get per-sample loss
-        avg_loss.extend(loss.data.view(-1,).cpu().numpy())
         
         loss.mean().backward()
         
         # Collect gradients
         a = [item.grad.data.cpu().numpy() for item in model.layers[layer].dummy]
-        print(f"Collected a length: {len(a)}")
+        # print(f"Collected a length: {len(a)}")
         
         if len(a) > 0:
-            print(f"a[0] shape: {a[0].shape}")
+            # print(f"a[0] shape: {a[0].shape}")
             a = np.array(a)
-            print(f"a array shape: {a.shape}")
+            # print(f"a array shape: {a.shape}")
         else:
             print("WARNING: a is empty!")
             # If empty, create a dummy array to avoid crash
@@ -245,11 +252,9 @@ def compute_A(epoch):
                 A += a
         count += 1        
     
-    avg_loss = np.array(avg_loss).mean()
-    
     A = np.array(A)
     A = A / count
-    print(f"A after averaging shape: {A.shape}")
+    # print(f"A after averaging shape: {A.shape}")
     
     rd = args.rd
     calculate_eigen(A, args.layer, rd)
@@ -266,6 +271,7 @@ def calculate_eigen(A, layer, rd=0):
     V = np.array(V)
     if not os.path.exists('eigen'):
         os.makedirs('eigen')
+    # TODO do we want to keep individual model eigens?
     pickle.dump(w_min, open('eigen/{}_A_{}_{}_.pkl'.format(args.dataset, str(layer), str(rd)), 'wb'))
     pickle.dump(V, open('eigen/{}_V_{}_{}_.pkl'.format(args.dataset, str(layer), str(rd)), 'wb'))
 
@@ -340,13 +346,18 @@ for epoch in range(args.epochs):
 # Only save results if we actually trained (not just computed A)
 if test_loss is not None:
     print("Best metric: " + str(best_loss))
-    if not os.path.exists('result'):
-        os.makedirs('result')
-    pickle.dump([test_loss, best_loss], open('result/{}_{}_result.pkl'.format(args.dataset, str(args.rd)), 'wb'))
+    result_dir = os.path.join('result', subdir1, subdir2)
+    print(f"Saving result in... {result_dir}")
+    if not os.path.exists(result_dir):
+        os.makedirs(result_dir)
+    pickle.dump([test_loss, best_loss], 
+                open(os.path.join(result_dir, f'{args.dataset}_{str(args.rd)}_result.pkl'), 'wb')
+    )
 else:
     print("Skipping result save (only computed A for layer {})".format(args.layer))
 
 if args.layer == -1:
-    print("Saving loss log to CSV")
+    args.save = os.path.join(args.save, subdir1, subdir2)
+    print(f"Saving loss log to CSV in... {args.save}")
     df = pd.DataFrame(dct)
-    df.to_csv(os.path.join(args.save, f'{args.dataset}_loss_log.csv'), index=False)
+    df.to_csv(os.path.join(args.save, f'{args.dataset}_loss_log_{args.rd}.csv'), index=False)
